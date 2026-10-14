@@ -365,14 +365,28 @@ function Get-VaultGraph {
     Get-ChildItem -Path $script:VaultRoot -Filter '*.md' -Recurse -File -ErrorAction SilentlyContinue |
         Where-Object { $_.FullName -notmatch '\\\.obsidian\\|\\\.system\\' } |
         ForEach-Object {
-            $src = [System.IO.Path]::GetFileName($_.Name)
+            $src = $_.Name
             $txt = [System.IO.File]::ReadAllText($_.FullName)
+
+            # Strip fenced code blocks, inline code, and HTML comments FIRST.
+            # Without this, a note that merely documents wikilink syntax
+            # (e.g. "grep for [[name]]") emits a phantom edge -- seen live.
+            $txt = [regex]::Replace($txt, '(?s)```.*?```', ' ')
+            $txt = [regex]::Replace($txt, '`[^`\r\n]*`', ' ')
+            $txt = [regex]::Replace($txt, '(?s)<!--.*?-->', ' ')
+
             foreach ($m in [regex]::Matches($txt, '\[\[([^\]|#]+)')) {
                 $tgt = $m.Groups[1].Value.Trim()
-                if ($tgt) {
+                # Normalise the extension so edges join: Obsidian's own
+                # metadataCache returns targets WITHOUT the .md suffix.
+                if ($tgt -match '\.md$') { $tgt = $tgt -replace '\.md$', '' }
+                # Self-links are noise (a note linking to itself adds no edge).
+                $bareSrc = $src -replace '\.md$', ''
+                if ($tgt -and ($tgt -ne $bareSrc)) {
                     if ($NoteName) {
-                        if ($src -eq $NoteName) { $links += [pscustomobject]@{ Source=$src; Target=$tgt; Kind='outlink' } }
-                        elseif ($tgt -eq $NoteName) { $links += [pscustomobject]@{ Source=$src; Target=$tgt; Kind='backlink' } }
+                        $n = $NoteName -replace '\.md$', ''
+                        if ($bareSrc -eq $n) { $links += [pscustomobject]@{ Source=$src; Target=$tgt; Kind='outlink' } }
+                        elseif ($tgt -eq $n)  { $links += [pscustomobject]@{ Source=$src; Target=$tgt; Kind='backlink' } }
                     }
                     else { $links += [pscustomobject]@{ Source=$src; Target=$tgt; Kind='outlink' } }
                 }

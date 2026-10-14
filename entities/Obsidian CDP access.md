@@ -34,3 +34,16 @@ It lists vaults as `{vaults:{<id>:{ts,path,open}}}`. **Writing it with PowerShel
 ## See also
 
 [[Council memory substrate]]
+
+## Correction: key format in resolvedLinks
+
+Verified live, the keys are **folder-prefixed paths including `.md`**, not bare
+filenames:
+
+```
+decisions/Council memory substrate.md -> decisions/Council write protocol.md,
+                                          entities/Obsidian CDP access.md
+```
+
+The harness's grep fallback in `Get-VaultGraph` returns bare names
+(`Council write protocol`), so normalise before joining the two sources.
