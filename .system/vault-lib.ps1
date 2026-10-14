@@ -217,27 +217,51 @@ function Write-VaultFileAtomic {
     Move-Item -LiteralPath $tmp -Destination $FullPath -Force   # atomic replace on same volume
 }
 
+function Get-VaultGit {
+    <#
+      Resolve git.exe without depending on PATH. Git lives in a user-local
+      tools dir here (no admin, so it can't go in a system path), and a
+      silently-skipped commit defeats the entire purpose of the safety net.
+    #>
+    $cmd = Get-Command git -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+
+    $candidates = @(
+        'C:\Users\Home\tools\git\cmd\git.exe',
+        "$env:ProgramFiles\Git\cmd\git.exe",
+        "${env:ProgramFiles(x86)}\Git\cmd\git.exe",
+        "$env:LOCALAPPDATA\Programs\Git\cmd\git.exe"
+    )
+    foreach ($c in $candidates) { if (Test-Path -LiteralPath $c) { return $c } }
+    return $null
+}
+
 function Save-VaultCommit {
     <#
       Commit the change so the agent name and diff are reviewable, and so any
-      write can be undone. No-op gracefully when git is absent.
+      write can be undone. Warns loudly when git is absent rather than
+      failing silently -- a skipped commit is the one failure mode that
+      defeats the whole point of a safety net.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Message,
         [string]$Author = 'harness'
     )
-    $git = Get-Command git -ErrorAction SilentlyContinue
-    if (-not $git) { return @{ committed = $false; reason = 'git not installed' } }
+    $git = Get-VaultGit
+    if (-not $git) {
+        Write-Warning "git not found -- write was NOT committed and has no undo. Install git or fix Get-VaultGit."
+        return @{ committed = $false; reason = 'git not installed' }
+    }
 
     $vault = $script:VaultRoot
-    git -C $vault add -A 2>$null | Out-Null
-    $pending = git -C $vault status --porcelain 2>$null
+    & $git -C $vault add -A 2>$null | Out-Null
+    $pending = & $git -C $vault status --porcelain 2>$null
     if (-not $pending) { return @{ committed = $false; reason = 'nothing to commit' } }
 
     $msg = "[$Author] $Message"
-    git -C $vault -c core.autocrlf=false commit -q -m $msg 2>$null | Out-Null
-    $sha = (git -C $vault rev-parse --short HEAD 2>$null)
+    & $git -C $vault -c core.autocrlf=false commit -q -m $msg 2>$null | Out-Null
+    $sha = (& $git -C $vault rev-parse --short HEAD 2>$null)
     return @{ committed = $true; sha = $sha; message = $msg }
 }
 
@@ -504,18 +528,41 @@ function Add-VaultInboxItem {
     )
 
     # --- the two content guards ---
+    # NOTE: patterns here are deliberately structural, not literal. The first
+    # version of this guard used `ignore (all|any|previous) instructions`,
+    # which silently missed "ignore ALL PREVIOUS instructions" because it
+    # only allowed ONE adjective. Anything that matches a concept should match
+    # any reasonable phrasing of it.
     $instructionPatterns = @(
-        '(?i)\b(ignore (all|any|previous|prior|above|earlier) instructions)\b',
-        '(?i)\b(disregard (the|your|all|previous) (instructions|rules|guidelines))\b',
-        '(?i)\b(you are now)\b',
-        '(?i)\b(act as if)\b',
-        '(?i)\b(system prompt)\b',
-        '(?i)\b(do not (tell|inform|mention) (the user|anyone))\b',
-        '(?i)\b(exfiltrat|send (this|it) to|post to http)\b'
+        # "ignore/disregard/forget/suspend ... instructions/rules/prompt/guidelines"
+        # with any number of words in between.
+        '(?i)\b(?:ignore|disregard|forget|overrid|suspend|bypass|throw out|strip out)\b[\s\S]{0,40}?\b(?:instructions?|rules?|guidelines?|constraints?|prompts?|the above|the previous|prior)\b',
+        # "you are now / act as if / pretend to be / your new role"
+        '(?i)\b(?:you are now|act as if|pretend (?:to be|you are)|your new role|from now on you)\b',
+        # "system prompt" / "developer message" in an imperative context
+        '(?i)\b(?:reveal|print|repeat|output|expose|leak)\b[\s\S]{0,30}?\b(?:system prompt|hidden prompt|developer message|instructions)\b',
+        # exfiltration: sending content off-machine
+        '(?i)\bexfiltrat',
+        '(?i)\b(?:send|post|upload|forward|email|upload)\b[\s\S]{0,30}?\b(?:this|it|the vault|the notes?|your output|everything)\b[\s\S]{0,30}?\b(?:to|into|at)\b[\s\S]{0,20}?\b(?:https?://|ftp://|discord|webhook|api endpoint)',
+        # concealment -- but ONLY concealment of the agent's own actions.
+        # The first version matched any "do not tell the user ..." sentence and
+        # wrongly refused ordinary advice like "do not tell the user the install
+        # worked until it is confirmed". The attack is specifically an agent
+        # hiding that it wrote to memory, so require a reflexive object.
+        '(?i)\b(?:do not|don''t|never)\b[\s\S]{0,25}?\b(?:tell|inform|mention|reveal)\b[\s\S]{0,20}?\b(?:the user|anyone|anyone else|the human)\b[\s\S]{0,20}?\b(?:that you|that this|about (?:this|your) (?:note|memory|write|save))\b',
+        '(?i)\b(?:hide|conceal|keep (?:this|it) secret|cover up)\b[\s\S]{0,30}?\b(?:from the user|from anyone|the memory|this note|your writes)\b'
+        # NOTE: a "credential harvesting" pattern was tried here and removed.
+        # It was brittle (missed verb-before-secret phrasing) and low value:
+        # notes are inert data, and an agent reading a sentence about an API
+        # key will not act on it. The instruction-shape patterns above are the
+        # ones that actually prevent an agent being manipulated. A guard that
+        # needs constant patching is worse than no guard -- it breeds false
+        # confidence and refuses legitimate memory.
     )
     foreach ($p in $instructionPatterns) {
         if ($Claim -match $p) {
-            throw "Refused: note body reads as an instruction to a future agent. Notes are data, never commands."
+            $shown = $Matches[0]
+            throw "Refused: note body reads as an instruction to a future agent (matched: '$shown'). Notes are data, never commands."
         }
     }
     if ($Claim.Length -gt 1200) {
