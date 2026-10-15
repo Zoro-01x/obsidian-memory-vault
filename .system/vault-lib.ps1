@@ -31,14 +31,37 @@ $script:ReservedNames = @(
     'LPT1','LPT2','LPT3','LPT4','LPT5','LPT6','LPT7','LPT8','LPT9'
 )
 
-$script:ValidTypes      = @('entity','decision','lesson','fact','inbox')
-$script:ValidStatus     = @('active','superseded','stale')
-$script:ValidConfidence = @('stated','observed','inferred')
+$script:ValidStatus = @('active','superseded','stale')
 
-# The only frontmatter an agent may set. Resist adding more: agents fill
-# extra fields inconsistently, and inconsistent frontmatter breaks retrieval.
-$script:RequiredFields = @('name','type','description','aliases','status',
-                           'created','updated','source','confidence')
+# `basis` replaces the old source + confidence pair. Provenance still matters
+# with a single writer, because external-model claims are where hallucination
+# enters: a note sourced from Gemini must not be treated like one you observed.
+#   user-stated     -- the user said it
+#   observed        -- you verified it yourself
+#   external-model  -- Gemini/Claude/web said it, unverified
+#   inferred        -- you concluded it
+$script:ValidBasis = @('user-stated','observed','external-model','inferred')
+
+# The only frontmatter the harness may set. Resist adding more: extra fields
+# get filled inconsistently, and inconsistent frontmatter breaks retrieval.
+#
+# Dropped in the single-writer revision (was: type, created, source,
+#   confidence):
+#   type      -- redundant with the folder, which the path allowlist already
+#                enforces. Two sources of truth for one fact can disagree.
+#   created   -- git history has it, with an author and a diff.
+#   source    -- merged into `basis`.
+#   confidence-- merged into `basis`.
+#
+# Added:
+#   scope     -- which project/repo this applies to. Without it, a convention
+#                learned in one repo leaks into another.
+#   verified  -- optional date; REQUIRED for notes about code or environment
+#                state, because stale code facts are the dominant failure mode.
+$script:RequiredFields = @('name','description','aliases','status',
+                           'updated','basis','scope')
+
+$script:OptionalFields = @('superseded_by','verified')
 
 function Get-VaultRoot { return $script:VaultRoot }
 
@@ -305,13 +328,25 @@ function Find-VaultNote {
         if ($fm.name -and $fm.name -match [regex]::Escape($Query)) { $score += 6 }
         if ($fm.aliases -and (@($fm.aliases) -join ' ') -match [regex]::Escape($Query)) { $score += 4 }
         if ($fm.description -and $fm.description -match [regex]::Escape($Query)) { $score += 3 }
-        if ($fm.type) { $score += 0.5 }
+        if ($fm.scope -and $fm.scope -match [regex]::Escape($Query)) { $score += 2 }
+        # Recency: an `updated` note beats a forgotten one on the same relevance.
+        if ($fm.updated) {
+            try {
+                $ageDays = ((Get-Date) - [datetime]$fm.updated).TotalDays
+                if ($ageDays -lt 30) { $score += 1.5 } elseif ($ageDays -lt 120) { $score += 0.5 }
+            } catch { }
+        }
+        # Stale/superseded notes should surface below active ones, not vanish.
+        if ($fm.status -eq 'stale' -or $fm.status -eq 'superseded') { $score -= 2 }
         [pscustomobject]@{
             Path        = $h.Path
             Name        = if ($fm.name) { $fm.name } else { [System.IO.Path]::GetFileNameWithoutExtension($h.Path) }
-            Type        = $fm.type
-            Description = $fm.description
+            Folder      = [System.IO.Path]::GetFileName((Split-Path -Parent $h.Path))
+            Basis       = $fm.basis
+            Scope       = $fm.scope
             Status      = $fm.status
+            Verified    = $fm.verified
+            Description = $fm.description
             Score       = $score
         }
     }
@@ -320,47 +355,21 @@ function Find-VaultNote {
 
 function Get-VaultGraph {
     <#
-      The wikilink graph. Primary source is Obsidian's own
-      app.metadataCache via CDP (authoritative, cheap). Falls back to
-      grepping for [[name]], which never breaks.
+      The wikilink graph, computed by grepping for [[target]].
+
+      The CDP/app.metadataCache path was REMOVED (Claude review). It was not
+      faster in any way that mattered -- this runs in milliseconds over a few
+      thousand files -- and it carried real costs:
+        * a dependency on Obsidian being open,
+        * an open port (9223) that is arbitrary code execution inside Obsidian,
+        * key-shape mismatch (metadataCache keys are folder-prefixed paths
+          WITH .md, this returns bare names) requiring normalisation anyway.
+
+      Obsidian stays a human viewer. It is not on the agent's critical path.
     #>
     [CmdletBinding()]
-    param(
-        [string]$NoteName,
-        [switch]$ViaObsidian
-    )
-    if ($ViaObsidian) {
-        try {
-            . 'C:\Users\Home\Downloads\cdp-lib.ps1'
-            $page = (Get-CdpTargets -Endpoint 'http://127.0.0.1:9223') |
-                    Where-Object { $_.url -like '*index.html*' -and $_.webSocketDebuggerUrl } |
-                    Select-Object -First 1
-            if ($page) {
-                $js = '(function(){try{var m=window.app.metadataCache;return JSON.stringify({resolved:m.resolvedLinks||{},unresolved:m.unresolvedLinks||{}});}catch(e){return null}})()'
-                $raw = Invoke-CdpEval -Target $page -Expression $js
-                if ($raw) {
-                    $data = $raw | ConvertFrom-Json
-                    if ($NoteName) {
-                        $out = @()
-                        foreach ($p in $data.resolved.PSObject.Properties) {
-                            if ($p.Name -eq $NoteName) {
-                                foreach ($t in $p.Value.PSObject.Properties) {
-                                    $out += [pscustomobject]@{ Source = $p.Name; Target = $t.Name; Kind = 'outlink' }
-                                }
-                            }
-                            elseif ($p.Value.PSObject.Properties[$NoteName]) {
-                                $out += [pscustomobject]@{ Source = $p.Name; Target = $NoteName; Kind = 'backlink' }
-                            }
-                        }
-                        return $out
-                    }
-                    return $data
-                }
-            }
-        } catch { Write-Verbose "Obsidian CDP unavailable, falling back to grep: $($_.Exception.Message)" }
-    }
+    param([string]$NoteName)
 
-    # Fallback: grep for [[target]]. No dependency, always works.
     $links = @()
     Get-ChildItem -Path $script:VaultRoot -Filter '*.md' -Recurse -File -ErrorAction SilentlyContinue |
         Where-Object { $_.FullName -notmatch '\\\.obsidian\\|\\\.system\\' } |
@@ -377,8 +386,6 @@ function Get-VaultGraph {
 
             foreach ($m in [regex]::Matches($txt, '\[\[([^\]|#]+)')) {
                 $tgt = $m.Groups[1].Value.Trim()
-                # Normalise the extension so edges join: Obsidian's own
-                # metadataCache returns targets WITHOUT the .md suffix.
                 if ($tgt -match '\.md$') { $tgt = $tgt -replace '\.md$', '' }
                 # Self-links are noise (a note linking to itself adds no edge).
                 $bareSrc = $src -replace '\.md$', ''
@@ -425,10 +432,19 @@ function Test-VaultNote {
     foreach ($f in $script:RequiredFields) {
         if (-not $fm.ContainsKey($f)) { $problems += "missing field: $f" }
     }
-    if ($fm.type -and $fm.type -notin $script:ValidTypes)     { $problems += "invalid type: '$($fm.type)'" }
-    if ($fm.status -and $fm.status -notin $script:ValidStatus){ $problems += "invalid status: '$($fm.status)'" }
-    if ($fm.confidence -and $fm.confidence -notin $script:ValidConfidence) { $problems += "invalid confidence: '$($fm.confidence)'" }
+    if ($fm.status  -and $fm.status  -notin $script:ValidStatus) { $problems += "invalid status: '$($fm.status)'" }
+    if ($fm.basis   -and $fm.basis   -notin $script:ValidBasis)  { $problems += "invalid basis: '$($fm.basis)'" }
     if (-not $fm.description) { $problems += 'empty description (retrieval hook)' }
+    if (-not $fm.scope)       { $problems += 'empty scope (which project/repo does this apply to?)' }
+
+    # Stale code facts are the dominant failure mode for a coding agent: a
+    # confident memory about code that has since changed. Any note about code
+    # or environment state must carry a verified date so it can be rechecked
+    # before it is relied on.
+    $codeShaped = "$($fm.description) $($Path)" -match '(?i)\b(code|repo|version|driver|install|config|api|path|command|flag|cli|dependency|package)\b'
+    if ($codeShaped -and -not $fm.verified) {
+        $problems += 'missing `verified` date (this note is about code/environment state)'
+    }
 
     return [pscustomobject]@{
         Path     = $Path
@@ -452,16 +468,15 @@ function New-VaultNote {
         [Parameter(Mandatory)][string]$Name,
         [Parameter(Mandatory)][string]$Description,
         [Parameter(Mandatory)][string]$Body,
-        [ValidateSet('entity','decision','lesson','fact','inbox')]
-        [string]$Type = 'inbox',
         [string[]]$Aliases = @(),
         [ValidateSet('active','superseded','stale')]
         [string]$Status = 'active',
-        [ValidateSet('stated','observed','inferred')]
-        [string]$Confidence = 'inferred',
-        [string]$Source = 'harness',
+        [ValidateSet('user-stated','observed','external-model','inferred')]
+        [string]$Basis = 'inferred',
+        [Parameter(Mandatory)][string]$Scope,          # which project/repo this applies to
+        [string]$Verified = '',                        # required for code/env-state notes
         [string]$SupersededBy = '',
-        [string]$Author = 'harness'
+        [string]$Author = 'harness'                    # git author only; NOT written to frontmatter
     )
 
     $clean = Test-SafeNoteName -Name $Name
@@ -469,8 +484,7 @@ function New-VaultNote {
     $full  = Resolve-VaultSafePath -RelativePath $rel
 
     if (Test-Path -LiteralPath $full) {
-        $existing = Read-VaultFrontmatter -Path $full
-        throw ("Note already exists: '$rel' (type=$($existing.type)). " +
+        throw ("Note already exists: '$rel'. " +
                "Do NOT overwrite. Use Update-VaultNote to append, or create a distinctly named note.")
     }
 
@@ -493,16 +507,15 @@ function New-VaultNote {
     $now = (Get-Date).ToString('yyyy-MM-dd')
     $fm  = @{
         name         = $clean
-        type         = $Type
         description  = $Description
         aliases      = @($Aliases)
         status       = $Status
-        created      = $now
         updated      = $now
-        source       = $Source
-        confidence   = $Confidence
+        basis        = $Basis
+        scope        = $Scope
     }
     if ($SupersededBy) { $fm.superseded_by = $SupersededBy }
+    if ($Verified)     { $fm.verified     = $Verified }
 
     $content = (ConvertTo-VaultFrontmatter -Data $fm) + "`n" + $Body.Trim() + "`n"
     Write-VaultFileAtomic -FullPath $full -Content $content
@@ -518,67 +531,68 @@ function New-VaultNote {
 
 function Add-VaultInboxItem {
     <#
-      THE ANTI-DUMPING VALVE. Agents write here by default; nothing reaches
-      entities/decisions until a consolidation pass promotes it.
+      STAGING. Used for content that is NOT yet trusted: external-model
+      claims (Gemini/Claude/web), user statements captured under context
+      pressure, and anything you will want to judge in a later session.
 
-      Two hard rules enforced here:
+      Direct note creation is preferred for anything you observed yourself.
+      If this folder is never drained, it is a graveyard -- see the prune rule
+      in the session protocol (surface items older than ~7 days).
+
+      Two rules:
         1. No transcripts. A proposal must be a single durable claim.
-        2. Data, not instructions. Anything that reads like a command to a
-           future agent is refused -- notes get replayed into every session,
-           so an injected line becomes persistent instruction.
+        2. WARN on instruction-shaped external content. This is warn-only and
+           deliberately NOT a hard refuse -- see the note below.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Title,
         [Parameter(Mandatory)][string]$Claim,
-        [ValidateSet('entity','decision','lesson','fact','inbox')]
-        [string]$Type = 'inbox',
         [string[]]$Aliases = @(),
         [string[]]$Links = @(),
-        [ValidateSet('stated','observed','inferred')]
-        [string]$Confidence = 'inferred',
-        [string]$Source = 'harness',
+        [ValidateSet('user-stated','observed','external-model','inferred')]
+        [string]$Basis = 'external-model',
+        [Parameter(Mandatory)][string]$Scope,
         [string]$Author = 'harness'
     )
 
-    # --- the two content guards ---
-    # NOTE: patterns here are deliberately structural, not literal. The first
-    # version of this guard used `ignore (all|any|previous) instructions`,
-    # which silently missed "ignore ALL PREVIOUS instructions" because it
-    # only allowed ONE adjective. Anything that matches a concept should match
-    # any reasonable phrasing of it.
-    $instructionPatterns = @(
-        # "ignore/disregard/forget/suspend ... instructions/rules/prompt/guidelines"
-        # with any number of words in between.
-        '(?i)\b(?:ignore|disregard|forget|overrid|suspend|bypass|throw out|strip out)\b[\s\S]{0,40}?\b(?:instructions?|rules?|guidelines?|constraints?|prompts?|the above|the previous|prior)\b',
-        # "you are now / act as if / pretend to be / your new role"
-        '(?i)\b(?:you are now|act as if|pretend (?:to be|you are)|your new role|from now on you)\b',
-        # "system prompt" / "developer message" in an imperative context
-        '(?i)\b(?:reveal|print|repeat|output|expose|leak)\b[\s\S]{0,30}?\b(?:system prompt|hidden prompt|developer message|instructions)\b',
-        # exfiltration: sending content off-machine
-        '(?i)\bexfiltrat',
-        '(?i)\b(?:send|post|upload|forward|email|upload)\b[\s\S]{0,30}?\b(?:this|it|the vault|the notes?|your output|everything)\b[\s\S]{0,30}?\b(?:to|into|at)\b[\s\S]{0,20}?\b(?:https?://|ftp://|discord|webhook|api endpoint)',
-        # concealment -- but ONLY concealment of the agent's own actions.
-        # The first version matched any "do not tell the user ..." sentence and
-        # wrongly refused ordinary advice like "do not tell the user the install
-        # worked until it is confirmed". The attack is specifically an agent
-        # hiding that it wrote to memory, so require a reflexive object.
-        '(?i)\b(?:do not|don''t|never)\b[\s\S]{0,25}?\b(?:tell|inform|mention|reveal)\b[\s\S]{0,20}?\b(?:the user|anyone|anyone else|the human)\b[\s\S]{0,20}?\b(?:that you|that this|about (?:this|your) (?:note|memory|write|save))\b',
-        '(?i)\b(?:hide|conceal|keep (?:this|it) secret|cover up)\b[\s\S]{0,30}?\b(?:from the user|from anyone|the memory|this note|your writes)\b'
-        # NOTE: a "credential harvesting" pattern was tried here and removed.
-        # It was brittle (missed verb-before-secret phrasing) and low value:
-        # notes are inert data, and an agent reading a sentence about an API
-        # key will not act on it. The instruction-shape patterns above are the
-        # ones that actually prevent an agent being manipulated. A guard that
-        # needs constant patching is worse than no guard -- it breeds false
-        # confidence and refuses legitimate memory.
-    )
-    foreach ($p in $instructionPatterns) {
-        if ($Claim -match $p) {
-            $shown = $Matches[0]
-            throw "Refused: note body reads as an instruction to a future agent (matched: '$shown'). Notes are data, never commands."
+    # --- content guard: WARN-ONLY, external content only ---
+    # WHY IT WAS DOWNGRADED FROM A REFUSE (Claude review, verified by test):
+    # Memory for a coding agent is inherently instruction-shaped. "Always use
+    # pnputil", "run tests before commit" -- these are exactly the notes worth
+    # keeping, and a refuse blocked that class by design. Tested against all
+    # 6 seeded notes: 0 refused; the representative "always use pnputil" note
+    # passed. The earlier 8/8-refuse figure proved little because I wrote the
+    # tests and the patterns together.
+    #
+    # The real structural defense is: provenance lives in `basis`, CORE.md
+    # says notes are data and never commands, and full notes are never
+    # auto-injected as instructions. The regex below is a tripwire, not a wall.
+    #
+    # It only runs for external-model content, because that is the only place
+    # an attacker-controlled sentence can enter the vault. Content you wrote
+    # yourself is not scanned -- you are not the threat.
+    if ($Basis -eq 'external-model') {
+        $instructionPatterns = @(
+            '(?i)\b(?:ignore|disregard|forget|overrid|suspend|bypass|throw out|strip out)\b[\s\S]{0,40}?\b(?:instructions?|rules?|guidelines?|constraints?|prompts?|the above|the previous|prior)\b',
+            '(?i)\b(?:you are now|act as if|pretend (?:to be|you are)|your new role|from now on you)\b',
+            '(?i)\b(?:reveal|print|repeat|output|expose|leak)\b[\s\S]{0,30}?\b(?:system prompt|hidden prompt|developer message|instructions)\b',
+            '(?i)\bexfiltrat',
+            '(?i)\b(?:send|post|upload|forward|email)\b[\s\S]{0,30}?\b(?:this|it|the vault|the notes?|your output|everything)\b[\s\S]{0,30}?\b(?:to|into|at)\b[\s\S]{0,20}?\b(?:https?://|ftp://|discord|webhook|api endpoint)',
+            '(?i)\b(?:do not|don''t|never)\b[\s\S]{0,25}?\b(?:tell|inform|mention|reveal)\b[\s\S]{0,20}?\b(?:the user|anyone|anyone else|the human)\b[\s\S]{0,20}?\b(?:that you|that this|about (?:this|your) (?:note|memory|write|save))\b',
+            '(?i)\b(?:hide|conceal|keep (?:this|it) secret|cover up)\b[\s\S]{0,30}?\b(?:from the user|from anyone|the memory|this note|your writes)\b'
+        )
+        foreach ($p in $instructionPatterns) {
+            if ($Claim -match $p) {
+                Write-Warning ("Instruction-shaped content in external-model note '$Title' " +
+                               "(matched: '$($Matches[0])'). Writing anyway -- review before promoting.")
+                break
+            }
         }
     }
+
+    # Transcripts are still a hard refuse: they are a context-budget problem,
+    # not a trust problem, and they fail the "still true in 3 months" test.
     if ($Claim.Length -gt 1200) {
         throw "Refused: proposal is $($Claim.Length) chars. Split it, or write a summary plus a link. Transcripts are not memory."
     }
@@ -603,8 +617,9 @@ $linkBlock
 "@
 
     $stamp = (Get-Date).ToString('yyyy-MM-dd-HHmmss')
-    return New-VaultNote -Folder 'inbox' -Name "$Title ($stamp)" -Description $Claim.Trim().Substring(0, [Math]::Min(150, $Claim.Trim().Length)) `
-                         -Body $body -Type $Type -Aliases $Aliases -Confidence $Confidence -Source $Source -Author $Author
+    return New-VaultNote -Folder 'inbox' -Name "$Title ($stamp)" `
+                         -Description $Claim.Trim().Substring(0, [Math]::Min(150, $Claim.Trim().Length)) `
+                         -Body $body -Aliases $Aliases -Basis $Basis -Scope $Scope -Author $Author
 }
 
 function Update-VaultNote {

@@ -1,13 +1,12 @@
 ---
-name: CORE
-type: entity
+aliases: ['core', 'memory index']
+basis: observed
 description: Always-loaded context block for every council session. Hard budget ~1500 tokens.
-aliases: [core, memory index]
+name: CORE
+scope: vault
 status: active
-created: 2026-10-14
-updated: 2026-10-14
-source: session/council-design
-confidence: observed
+updated: '2026-10-14'
+verified: '2026-10-14'
 ---
 
 # Council memory — core
