@@ -16,7 +16,14 @@
 
 # --- configuration ---------------------------------------------------------
 
-$script:VaultRoot = 'C:\Users\Home\Documents\ObsidianVault'
+# Overridable ONLY by environment variable, and only here, at load time.
+# The commit-isolation test must run against a throwaway repo -- a test that
+# writes to live history will eventually pollute it -- and the MCP server
+# inherits whatever this shell has. Deliberately not a -Parameter: a root
+# passed in by a caller is an unvalidated path, and every path guard below
+# resolves against this value.
+$script:VaultRoot = if ($env:OBSIDIAN_VAULT_ROOT) { $env:OBSIDIAN_VAULT_ROOT }
+                    else { 'C:\Users\Home\Documents\ObsidianVault' }
 
 # Write verbs may only create files inside these folders.
 $script:WriteFolders = @('inbox', 'entities', 'decisions', 'lessons')
