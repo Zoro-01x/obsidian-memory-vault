@@ -1,0 +1,66 @@
+{
+    "version":  1,
+    "note":  "Accepted, non-secret findings. Only the `windows user path` detector is baselinable; a credential detector named here is treated as tampering and the scan fails. Keyed on detector+path+line-hash because path alone would let a new credential in the same file hide.",
+    "entries":  [
+                    {
+                        "detector":  "windows user path",
+                        "path":  ".system/migrate-schema.ps1",
+                        "sha256":  "3e3b6724bba3592d14f705734146554319285aea7b4792fe2381bfafe93f1d0a"
+                    },
+                    {
+                        "detector":  "windows user path",
+                        "path":  ".system/migrate-schema.ps1",
+                        "sha256":  "73139954636571ce9f37075913cea36ec1b5f89f0b1a3041218ce228d3048d4e"
+                    },
+                    {
+                        "detector":  "windows user path",
+                        "path":  ".system/vault-lib.ps1",
+                        "sha256":  "22ca9cebea2c6f5bf7e1017c431a407bb8064b051c9d168a5fceb7dd3b4f3e0c"
+                    },
+                    {
+                        "detector":  "windows user path",
+                        "path":  ".system/vault-lib.ps1",
+                        "sha256":  "2e444eda3f8fc8183b3e92dbc8fc905640ce6afab154206ed9bc3699b1b90790"
+                    },
+                    {
+                        "detector":  "windows user path",
+                        "path":  ".system/vault-lib.ps1",
+                        "sha256":  "63c846817891d854e0af52d567a8c2d96c479ecb81ec26de23472c1daf84a25f"
+                    },
+                    {
+                        "detector":  "windows user path",
+                        "path":  ".system/vault-lib.ps1",
+                        "sha256":  "d7a1b0f8760946a2cebeeb27cabd2153febee0bf8acfa836d272210921aece9f"
+                    },
+                    {
+                        "detector":  "windows user path",
+                        "path":  ".system/vault-lib.ps1",
+                        "sha256":  "19734ea0517d09207030b884dadb28c5b4918a59797ed54de4994b1cf3877379"
+                    },
+                    {
+                        "detector":  "windows user path",
+                        "path":  ".system/vault-lib.ps1",
+                        "sha256":  "3ad7b38e10beb78d14da01b7f4a7c6fde47233bee871fca45b01d46b255bcc04"
+                    },
+                    {
+                        "detector":  "windows user path",
+                        "path":  ".system/write-validation-test.ps1",
+                        "sha256":  "73139954636571ce9f37075913cea36ec1b5f89f0b1a3041218ce228d3048d4e"
+                    },
+                    {
+                        "detector":  "windows user path",
+                        "path":  "entities/Council memory build state.md",
+                        "sha256":  "1e878ead00dd0edd30fff0446a6e2ae475f61a0f1e9f3d957bba28550bee3cfb"
+                    },
+                    {
+                        "detector":  "windows user path",
+                        "path":  "entities/Obsidian CDP access.md",
+                        "sha256":  "5e30d07b62ec7f2df2259b779f560b4a17278808c775884cc9f3439e1753b12c"
+                    },
+                    {
+                        "detector":  "windows user path",
+                        "path":  "entities/Obsidian CDP access.md",
+                        "sha256":  "6576cc4d2e9445f28c9d1d5827121baf5da773818cd49ff74c628a7d40faaddc"
+                    }
+                ]
+}
