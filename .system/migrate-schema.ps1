@@ -74,9 +74,16 @@ Get-ChildItem $vault -Recurse -Filter '*.md' -File |
             $new['verified'] = $verified[$file.Name]
         }
 
-        # required-field guard: refuse to write a note that would fail its own validation
+        # required-field guard: refuse to write a note that would fail its own
+        # validation. Presence is what matters for list fields -- `aliases: []`
+        # is a valid, intentional empty list, not a missing field. Scalars must
+        # be non-empty.
+        $emptyIsMissing = @('name','description','basis','scope','status','updated')
         foreach ($req in $script:RequiredFields) {
-            if (-not $new.Contains($req) -or [string]::IsNullOrWhiteSpace([string]$new[$req])) {
+            if (-not $new.Contains($req)) {
+                throw "Migration refused for '$($file.Name)': required field '$req' absent. Fix the map."
+            }
+            if ($req -in $emptyIsMissing -and [string]::IsNullOrWhiteSpace([string]$new[$req])) {
                 throw "Migration refused for '$($file.Name)': required field '$req' would be empty. Fix the map."
             }
         }

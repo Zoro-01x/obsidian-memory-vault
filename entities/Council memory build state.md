@@ -1,12 +1,10 @@
 ---
 aliases: ['handoff', 'build state', 'council progress', 'resume point']
-confidence: observed
-created: '2026-10-14'
+basis: observed
 description: 'Handoff: Phases 0-2 done, next is dual-member dispatcher. Read this to resume cold.'
 name: Council memory build state
-source: session/council-build
+scope: council
 status: active
-type: entity
 updated: '2026-10-14'
 ---
 

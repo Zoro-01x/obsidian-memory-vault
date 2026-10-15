@@ -1,12 +1,10 @@
 ---
-aliases: []
-confidence: observed
-created: '2026-10-14'
+aliases: ~
+basis: observed
 description: Agents propose to inbox/; the harness is the sole writer and enforces the five memory-hygiene rules
 name: Council write protocol
-source: session/council-design
+scope: council
 status: active
-type: decision
 updated: '2026-10-14'
 ---
 

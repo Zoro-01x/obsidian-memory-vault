@@ -1,13 +1,12 @@
 ---
 aliases: ['obsidian', 'obsidian debugging']
-confidence: observed
-created: '2026-10-14'
+basis: observed
 description: Obsidian 1.14.4 runs with CDP on port 9223; app.metadataCache exposes the real link graph
 name: Obsidian CDP access
-source: session/obsidian-setup
+scope: toolchain
 status: active
-type: entity
 updated: '2026-10-14'
+verified: '2026-10-14'
 ---
 
 ## Facts

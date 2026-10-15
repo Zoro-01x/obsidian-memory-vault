@@ -1,13 +1,12 @@
 ---
 aliases: ['intel gfx', 'igpu driver', 'display driver']
-confidence: observed
-created: '2026-10-14'
+basis: observed
 description: Intel installer exits code 7; bypass via 7-Zip extract + pnputil
 name: Intel UHD driver install
-source: session/display-fix
+scope: machine
 status: active
-type: lesson
 updated: '2026-10-14'
+verified: '2026-10-14'
 ---
 
 ## Symptom

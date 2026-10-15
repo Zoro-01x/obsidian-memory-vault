@@ -1,12 +1,10 @@
 ---
-aliases: []
-confidence: observed
-created: '2026-10-14'
+aliases: ~
+basis: observed
 description: Use plain markdown + wikilinks as agent memory; no vector DB, no MCP server, no hosted service
 name: Council memory substrate
-source: session/council-design
+scope: council
 status: active
-type: decision
 updated: '2026-10-14'
 ---
 
