@@ -4,9 +4,37 @@
 # Run once. Rewrites ONLY the frontmatter block; bodies are preserved verbatim.
 # Safe to re-run: already-migrated notes are skipped.
 
-. 'C:\Users\Home\Documents\ObsidianVault\.system\vault-lib.ps1'
+# ISOLATION: this script only ever runs against a scratch copy under %TEMP%.
+# It rewrites frontmatter and commits, so pointed at a real vault it would
+# commit into live history -- the same failure that put two `test` commits on
+# top of the pushed backup on 2026-10-15, from the write-validation test.
+# The migration it performs has already run, so a live-root refusal costs
+# nothing and removes the temptation to "just re-run it".
+#
+# Run it against a throwaway clone:
+#   git clone --local <vault> %TEMP%\mig-XXXX
+#   echo restore > %TEMP%\mig-XXXX\.vault-test-root
+#   powershell -NoProfile -ExecutionPolicy Bypass -File %TEMP%\mig-XXXX\.system\migrate-schema.ps1
+$sysDir = $PSScriptRoot
+if (-not $sysDir) { throw 'cannot resolve $PSScriptRoot; run this with -File' }
+. (Join-Path $sysDir 'vault-lib.ps1')
 
-$vault = 'C:\Users\Home\Documents\ObsidianVault'
+$vault = Get-VaultRoot
+$rootFull   = [System.IO.Path]::GetFullPath($vault)
+$tempFull   = [System.IO.Path]::GetFullPath($env:TEMP).TrimEnd('\')
+$underTemp  = $rootFull.StartsWith($tempFull + '\', [System.StringComparison]::OrdinalIgnoreCase)
+$hasSentinel = Test-Path -LiteralPath (Join-Path $rootFull '.vault-test-root')
+if (-not ($underTemp -and $hasSentinel)) {
+    Write-Error @"
+Refusing to run: resolved vault root is '$rootFull'.
+  inside %TEMP%    : $underTemp
+  sentinel present : $hasSentinel
+This script rewrites notes and commits. Clone to %TEMP%, plant a
+.vault-test-root sentinel there, and run the clone's copy.
+"@
+    exit 2
+}
+
 $today = '2026-10-14'
 
 # scope: which project/repo this applies to. Without it a convention learned
