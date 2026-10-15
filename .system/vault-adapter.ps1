@@ -72,6 +72,17 @@ function Get-ArgBool {
     if ($v -match '^(?i:false|0|no)$')  { return $false }
     return $Default
 }
+function Get-ArgHashtable {
+    # A JSON object arrives as PSCustomObject, not hashtable. Only the shape
+    # changes; values stay exactly as sent.
+    param([hashtable]$A, [string]$Name)
+    if (-not $A.ContainsKey($Name) -or $null -eq $A[$Name]) { return @{} }
+    $o = $A[$Name]
+    if ($o -is [hashtable]) { return $o }
+    $h = @{}
+    foreach ($p in $o.PSObject.Properties) { $h[$p.Name] = $p.Value }
+    return $h
+}
 
 # --- dispatch --------------------------------------------------------------
 # Explicit whitelist. The verb name selects code; no input ever becomes a
@@ -182,18 +193,28 @@ try {
         'append' {
             # Append-only by default; replacing a whole body needs an explicit
             # replaceBody, because "rewrite from memory of an earlier read" is
-            # how notes get clobbered.
-            $append = Get-ArgString $a 'text'
-            $replace = Get-ArgString $a 'replaceBody'
+            # how notes get clobbered. `set` edits frontmatter through a
+            # whitelist -- the only way to mark a note superseded.
+            $append  = Get-ArgString   $a 'text'
+            $replace = Get-ArgString   $a 'replaceBody'
+            $set     = Get-ArgHashtable $a 'set'
+
+            # camelCase in, snake_case in the frontmatter.
+            if ($set.ContainsKey('supersededBy') -and -not $set.ContainsKey('superseded_by')) {
+                $set['superseded_by'] = $set['supersededBy']
+                $set.Remove('supersededBy')
+            }
+
             $splat = @{
                 RelativePath = Get-ArgString $a 'path'
                 Author       = Get-ArgString $a 'author' 'harness'
             }
             if (-not [string]::IsNullOrEmpty($replace)) { $splat.ReplaceBody = $replace }
-            else { $splat.AppendText = $append }
+            elseif (-not [string]::IsNullOrEmpty($append)) { $splat.AppendText = $append }
+            if ($set.Count) { $splat.Set = $set }
 
             $r = Update-VaultNote @splat
-            $result = @{ path = $r.Path; action = $r.Action; commit = $r.Commit }
+            $result = @{ path = $r.Path; action = $r.Action; commit = $r.Commit; set = @($r.Set) }
         }
 
         'propose' {

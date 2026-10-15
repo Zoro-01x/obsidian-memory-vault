@@ -112,8 +112,9 @@ const TOOLS = [
   {
     name: "append",
     description:
-      "Add text to an EXISTING note. Preferred over create when a note already exists, because rewriting a note from memory of an earlier read is how notes get clobbered. " +
-      "Provide `text` to append, or `replaceBody` to replace the whole body.",
+      "Change an EXISTING note. Preferred over create when a note already exists, because rewriting a note from memory of an earlier read is how notes get clobbered. " +
+      "Provide `text` to append, `replaceBody` to replace the whole body, and/or `set` to edit frontmatter fields (this is how a note gets marked superseded or given a fresh `verified` date). " +
+      "At least one of the three is required; the result is validated before it is written.",
     inputSchema: {
       type: "object",
       required: ["path"],
@@ -121,6 +122,20 @@ const TOOLS = [
         path: { type: "string", description: "Vault-relative path with .md extension." },
         text: { type: "string", description: "Markdown to append (separated from existing content by a blank line)." },
         replaceBody: { type: "string", description: "Replace the entire body. Only with a freshly-read note." },
+        set: {
+          type: "object",
+          description: "Frontmatter fields to change. Whitelist only: description, aliases, status, basis, scope, verified, superseded_by. `name` and `updated` cannot be set (updated is always today, so edits cannot be backdated).",
+          properties: {
+            description: { type: "string" },
+            status: { type: "string", enum: ["active", "superseded", "stale"] },
+            basis: { type: "string", enum: BASIS },
+            scope: { type: "string" },
+            verified: { type: "string", description: "YYYY-MM-DD recheck date." },
+            aliases: { type: "array", items: { type: "string" } },
+            supersededBy: { type: "string", description: "Title of the note that replaced this one." },
+          },
+          additionalProperties: false,
+        },
         author: { type: "string", description: "Git commit author (default 'harness')." },
       },
       additionalProperties: false,
@@ -359,6 +374,17 @@ async function handle(msg) {
 // stdio transport: one JSON-RPC message per line.
 const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
 
+// In-flight request tracking. Without it, closing stdin (client half-close,
+// session teardown, or any client that writes its requests and then ends the
+// stream) kills every request still waiting on PowerShell -- which is ALL of
+// them for the first ~1s. Answers that were owed should be delivered.
+let pending = 0;
+let stdinClosed = false;
+
+function maybeExit() {
+  if (stdinClosed && pending === 0) process.exit(0);
+}
+
 rl.on("line", (line) => {
   const text = line.trim();
   if (!text) return;
@@ -369,13 +395,27 @@ rl.on("line", (line) => {
     log(`discarding non-JSON line: ${text.slice(0, 120)}`);
     return;
   }
-  Promise.resolve(handle(msg)).catch((e) => {
-    log(`handler crashed: ${e && e.stack ? e.stack : e}`);
-    if (msg && msg.id !== undefined && msg.id !== null) replyError(msg.id, -32603, `internal error: ${e.message}`);
-  });
+  pending++;
+  Promise.resolve(handle(msg))
+    .catch((e) => {
+      log(`handler crashed: ${e && e.stack ? e.stack : e}`);
+      if (msg && msg.id !== undefined && msg.id !== null) replyError(msg.id, -32603, `internal error: ${e.message}`);
+    })
+    .finally(() => {
+      pending--;
+      maybeExit();
+    });
 });
 
-rl.on("close", () => process.exit(0));
+rl.on("close", () => {
+  stdinClosed = true;
+  if (pending > 0) {
+    // Safety net: never hang forever on a wedged child process.
+    setTimeout(() => process.exit(0), SPAWN_TIMEOUT_MS + 10_000).unref();
+    log(`stdin closed with ${pending} request(s) in flight; draining`);
+  }
+  maybeExit();
+});
 process.on("SIGPIPE", () => process.exit(0));
 
 log(`started (adapter: ${ADAPTER})`);

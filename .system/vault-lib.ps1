@@ -461,31 +461,63 @@ function Test-VaultCodeShaped {
     return [bool]($Text -match '(?i)\b(code|repo|version|driver|install|config|api|path|command|flag|cli|dependency|package|port)\b')
 }
 
-function Test-VaultNote {
+function Test-VaultData {
     <#
-      True when the note passes every write-time rule. Used by the promotion
-      pass to reject inbox items that are malformed before they go live.
+      Validates a frontmatter hashtable WITHOUT touching disk, so the same
+      rules can run before a write (refuse to create an invalid note) and
+      after a read (report on an existing one). One definition means the rule
+      cannot drift between the two paths -- which was the actual bug: the
+      schema existed, but nothing ever ran it at write time.
     #>
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$Path)
-
-    $fm = Read-VaultFrontmatter -Path $Path
+    param(
+        [Parameter(Mandatory)][hashtable]$Data,
+        [string]$Path = ''
+    )
     $problems = @()
+
     foreach ($f in $script:RequiredFields) {
-        if (-not $fm.ContainsKey($f)) { $problems += "missing field: $f" }
+        if (-not $Data.ContainsKey($f)) { $problems += "missing field: $f" }
     }
-    if ($fm.status  -and $fm.status  -notin $script:ValidStatus) { $problems += "invalid status: '$($fm.status)'" }
-    if ($fm.basis   -and $fm.basis   -notin $script:ValidBasis)  { $problems += "invalid basis: '$($fm.basis)'" }
-    if (-not $fm.description) { $problems += 'empty description (retrieval hook)' }
-    if (-not $fm.scope)       { $problems += 'empty scope (which project/repo does this apply to?)' }
+    if ($Data['status'] -and $Data['status'] -notin $script:ValidStatus) {
+        $problems += "invalid status: '$($Data['status'])'"
+    }
+    if ($Data['basis'] -and $Data['basis'] -notin $script:ValidBasis) {
+        $problems += "invalid basis: '$($Data['basis'])'"
+    }
+    if (-not $Data['description']) { $problems += 'empty description (retrieval hook)' }
+    if (-not $Data['scope'])       { $problems += 'empty scope (which project/repo does this apply to?)' }
+
+    # Dates are compared and aged programmatically; a free-text date like
+    # "yes" or "recently" would silently break Get-VaultStale.
+    foreach ($d in @('updated', 'verified')) {
+        if ($Data[$d] -and [string]$Data[$d] -notmatch '^\d{4}-\d{2}-\d{2}$') {
+            $problems += "$d must be YYYY-MM-DD, got '$($Data[$d])'"
+        }
+    }
 
     # Stale code facts are the dominant failure mode for a coding agent: a
     # confident memory about code that has since changed. Any note about code
     # or environment state must carry a verified date so it can be rechecked
     # before it is relied on.
-    if ((Test-VaultCodeShaped -Text "$($fm.description) $($Path)") -and -not $fm.verified) {
+    if ((Test-VaultCodeShaped -Text "$($Data['description']) $Path") -and -not $Data['verified']) {
         $problems += 'missing `verified` date (this note is about code/environment state)'
     }
+
+    return $problems
+}
+
+function Test-VaultNote {
+    <#
+      True when an existing note passes every rule. Used by the read verb to
+      surface schema problems, and by any pass that decides whether to promote
+      or trust a note.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path)
+
+    $fm       = Read-VaultFrontmatter -Path $Path
+    $problems = @(Test-VaultData -Data $fm -Path $Path)
 
     return [pscustomobject]@{
         Path     = $Path
@@ -557,6 +589,15 @@ function New-VaultNote {
     }
     if ($SupersededBy) { $fm.superseded_by = $SupersededBy }
     if ($Verified)     { $fm.verified     = $Verified }
+
+    # Validate BEFORE writing, against the in-memory data -- the file does not
+    # exist yet, so the on-disk validator cannot be used here. Without this the
+    # schema was advisory: Test-VaultNote only ever reported problems after
+    # the fact, and nothing stopped an invalid note from landing.
+    $problems = @(Test-VaultData -Data $fm -Path $rel)
+    if ($problems.Count) {
+        throw "Refusing to create '$rel' -- it would fail its own validation: $($problems -join '; ')"
+    }
 
     $content = (ConvertTo-VaultFrontmatter -Data $fm) + "`n" + $Body.Trim() + "`n"
     Write-VaultFileAtomic -FullPath $full -Content $content
@@ -665,15 +706,28 @@ $linkBlock
 
 function Update-VaultNote {
     <#
-      Append-only by default. Full-body replacement requires -Replace and is
-      deliberately awkward, because "agent rewrites a file from its memory of
-      an earlier read" is how notes get clobbered.
+      Three ways to change a note, all of them non-destructive in spirit:
+
+        -AppendText   add a section (the common case)
+        -ReplaceBody  swap the whole body -- deliberately awkward, because
+                      "agent rewrites a file from its memory of an earlier read"
+                      is how notes get clobbered
+        -Set          edit frontmatter fields through a whitelist
+
+      -Set exists because without it `status: superseded` is unreachable: a
+      note could never be retired, so every note would live forever as
+      `active` and the stale pass would only ever report stale items, never
+      superseded ones. Updated is deliberately NOT in the whitelist -- it is
+      always today's date, so an agent cannot backdate its own edit, and
+      neither is `name`, because renaming means a new note plus a supersede
+      pointer.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$RelativePath,
         [string]$AppendText = '',
         [string]$ReplaceBody = '',
+        [hashtable]$Set = @{},
         [string]$Author = 'harness'
     )
     $full = Resolve-VaultSafePath -RelativePath $RelativePath
@@ -690,27 +744,36 @@ function Update-VaultNote {
         $body = ($body.TrimEnd() + "`n`n" + $AppendText.Trim())
         $action = 'append'
     }
-    else { throw 'Specify -AppendText or -ReplaceBody.' }
+
+    # --- frontmatter whitelist ---
+    $mutable  = @('description', 'aliases', 'status', 'basis', 'scope', 'verified', 'superseded_by')
+    $changed  = @()
+    foreach ($k in @($Set.Keys)) {
+        if ($mutable -notcontains $k) {
+            throw "Field '$k' is not mutable through update. Mutable: $($mutable -join ', '). " +
+                  "To rename, create a new note and set superseded_by."
+        }
+        $fm[$k] = $Set[$k]
+        $changed += $k
+    }
+
+    if ($changed.Count -and $action)      { $action = "$action+set($($changed -join ','))" }
+    elseif ($changed.Count)               { $action = "set($($changed -join ','))" }
+    elseif (-not $action)                 { throw 'Specify -AppendText, -ReplaceBody, or -Set.' }
+
+    # The result must still be a valid note; refuse rather than leave a note
+    # that the schema would reject on the next read.
+    $problems = @(Test-VaultData -Data $fm -Path $RelativePath)
+    if ($problems.Count) {
+        throw "Refusing to update '$RelativePath' -- it would end up invalid: $($problems -join '; ')"
+    }
 
     $fm.updated = (Get-Date).ToString('yyyy-MM-dd')
     $content = (ConvertTo-VaultFrontmatter -Data $fm) + "`n" + $body.Trim() + "`n"
     Write-VaultFileAtomic -FullPath $full -Content $content
 
     $commit = Save-VaultCommit -Message "$action $RelativePath" -Author $Author
-    return [pscustomobject]@{ Path = $RelativePath; Action = $action; Commit = $commit.sha }
-}
-
-function Get-VaultStats {
-    [CmdletBinding()]
-    $files = Get-ChildItem -Path $script:VaultRoot -Filter '*.md' -Recurse -File -ErrorAction SilentlyContinue |
-             Where-Object { $_.FullName -notmatch '\\\.obsidian\\|\\\.system\\|\\\.git\\' }
-    $byFolder = $files | Group-Object { $_.DirectoryName.Replace("$script:VaultRoot\",'').Split('\')[0] }
-    return [pscustomobject]@{
-        Total   = $files.Count
-        Words   = ($files | ForEach-Object { ([System.IO.File]::ReadAllText($_.FullName) -split '\s+').Count } |
-                    Measure-Object -Sum).Sum
-        Folders = ($byFolder | ForEach-Object { "$($_.Name)=$($_.Count)" }) -join '  '
-    }
+    return [pscustomobject]@{ Path = $RelativePath; Action = $action; Commit = $commit.sha; Set = $changed }
 }
 
 function Get-VaultStale {
