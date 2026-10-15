@@ -4,7 +4,7 @@ basis: observed
 description: Agents propose to inbox/; the harness is the sole writer and enforces the five memory-hygiene rules
 name: Council write protocol
 scope: council
-status: stale
+status: active
 updated: '2026-10-15'
 ---
 
