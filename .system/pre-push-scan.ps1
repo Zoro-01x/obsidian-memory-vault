@@ -271,6 +271,38 @@ function Invoke-SelfTest {
     return $fails
 }
 
+# --- push-range author check --------------------------------------------------
+# The detectors above read ALL history, because a secret stays recoverable after
+# it is scrubbed. This one deliberately does NOT: earlier runs already left
+# `test`-authored commits inside the pushed history, and rewriting pushed
+# history is a much bigger decision than this scanner gets to make.
+#
+# It covers only the range about to be pushed. The failure it catches is a test
+# suite writing into the real vault and committing there -- which is exactly
+# what happened on 2026-10-15, when the write-validation test hardcoded the
+# live vault path and put two `test` commits on top of the backup.
+function Get-TestAuthoredRangeCommits {
+    param([string]$Repo, [string]$GitExe)
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $upstream = & $GitExe -C $Repo rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>$null
+    $haveUpstream = ($LASTEXITCODE -eq 0 -and $upstream)
+    $range = if ($haveUpstream) { '@{upstream}..HEAD' } else { 'origin/main..HEAD' }
+    $label = if ($haveUpstream) { "$upstream..HEAD" } else { 'origin/main..HEAD' }
+    $commits = @(& $GitExe -C $Repo log --format='%h|%an|%ae|%s' $range 2>$null)
+    $err = $LASTEXITCODE
+    $ErrorActionPreference = $prev
+    if ($err -ne 0) {
+        # No upstream and no origin/main means there is nothing to push yet.
+        return @{ Range = $range; Label = $label; Commits = @(); Unavailable = $true }
+    }
+    $bad = @($commits | Where-Object {
+        $parts = $_ -split '\|', 4
+        $parts[1] -eq 'test' -or $parts[2] -match '^test@'
+    })
+    return @{ Range = $range; Label = $label; Commits = $commits; Bad = $bad; Unavailable = $false }
+}
+
 # --- run -------------------------------------------------------------------
 $stFails = @(Invoke-SelfTest)
 if ($stFails.Count) {
@@ -302,16 +334,33 @@ foreach ($f in $scan.Findings) {
 # Credential detectors can never be suppressed, so double-check by detector.
 $live = @($live | Where-Object { $Detectors[$_.Detector].Baselinable -or $true })
 
+$rng = Get-TestAuthoredRangeCommits -Repo $vault -GitExe $git
+$testAuthored = @($rng.Bad)
+
 if ($Brief) {
     if ($live.Count) { "DIRTY -- $($live.Count) new finding(s) across $($scan.Count) commits (baseline holds $($bl.Count) accepted). Do not push." }
+    elseif ($testAuthored.Count) { "DIRTY -- $($testAuthored.Count) test-authored commit(s) in $($rng.Label). A test wrote into the real vault. Do not push." }
     else             { "CLEAN -- 0 new findings across $($scan.Count) commits; $($bl.Count) accepted by baseline; self-test passed." }
-    exit $(if ($live.Count) { 1 } else { 0 })
+    exit $(if ($live.Count -or $testAuthored.Count) { 1 } else { 0 })
 }
 
 "=== pre-push scan: $($scan.Count) commits, whole history ==="
 "self-test : PASSED (6 detectors, planted-then-scrubbed bait, boundary email rule, tamper rules)"
 "baseline  : $($bl.Count) accepted entr$(if ($bl.Count -eq 1) { 'y' } else { 'ies' }) -- $baselinePs"
 ""
+"=== push range: $($rng.Label) ==="
+if ($rng.Unavailable) {
+    'no upstream and no origin/main -- nothing to push yet; range check skipped.'
+} elseif ($testAuthored.Count) {
+    "TEST-AUTHORED COMMITS IN THE PUSH RANGE -- $($testAuthored.Count):"
+    $testAuthored | ForEach-Object { "  $_" }
+    ''
+    'A test suite wrote into the real vault. Find the writer, do not push over it.'
+    exit 1
+} else {
+    "$($rng.Commits.Count) commit(s) in range, none authored by the test identity."
+}
+
 if ($live.Count) {
     "NEW FINDINGS (not in baseline) -- $($live.Count):"
     $live | Sort-Object Detector, Path | Select-Object -First 12 | ForEach-Object {
