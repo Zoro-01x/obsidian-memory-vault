@@ -20,3 +20,7 @@ verified: '2026-10-14'
 ## Verified by
 
 Adapter test: the em dash and the curly quotes survived the round trip, and the commit landed.
+
+## Encoding probe
+
+Café ’s “quoted” — probe
