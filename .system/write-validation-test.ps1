@@ -129,10 +129,43 @@ if (-not $git) {
         # An untracked file, also never touched by the verb.
         Set-Content -LiteralPath (Join-Path $tmpRoot 'scratch-untracked.md') -Value "untracked`n" -Encoding UTF8
 
-        # Point the library at the scratch repo and reload it there.
+        # Point the library at the scratch repo and reload it there. The
+        # sentinel is what makes the override legal; without it the lib
+        # refuses the env var and stays on the real vault.
+        Set-Content -LiteralPath (Join-Path $tmpRoot '.vault-test-root') -Value 'test-only' -Encoding UTF8
         $env:OBSIDIAN_VAULT_ROOT = $tmpRoot
         . (Join-Path $vault '.system\vault-lib.ps1')
         T 'library reloaded against the throwaway repo' ((Get-VaultRoot) -eq $tmpRoot) (Get-VaultRoot)
+        T 'sentinel override was HONORED' ((Get-VaultOverrideStatus) -eq 'honored') (Get-VaultOverrideStatus)
+
+        # The override must be refused without BOTH conditions. Each of these
+        # reloads the lib with a bad env var and asserts the root did NOT move
+        # -- the hole this closes is an injected line repointing every path
+        # guard at an attacker-chosen directory.
+        $rejects = @(
+            @{ Name = 'TEMP dir WITHOUT sentinel'; Dir = (Join-Path $env:TEMP ('no-sentinel-' + [guid]::NewGuid().ToString('N').Substring(0,8))) }
+            @{ Name = 'sentinel dir OUTSIDE TEMP'; Dir = (Join-Path $env:USERPROFILE ('outside-temp-' + [guid]::NewGuid().ToString('N').Substring(0,8))) }
+        )
+        foreach ($rj in $rejects) {
+            New-Item -ItemType Directory -Path $rj.Dir -Force | Out-Null
+            if ($rj.Name -like '*OUTSIDE*') {
+                Set-Content -LiteralPath (Join-Path $rj.Dir '.vault-test-root') -Value 'test-only' -Encoding UTF8
+            }
+            try {
+                $env:OBSIDIAN_VAULT_ROOT = $rj.Dir
+                $WarningPreference = 'SilentlyContinue'
+                . (Join-Path $vault '.system\vault-lib.ps1')
+                $WarningPreference = 'Continue'
+                T "override REJECTED: $($rj.Name)" ((Get-VaultOverrideStatus) -eq 'ignored') (Get-VaultOverrideStatus)
+                T "root did NOT move: $($rj.Name)" ((Get-VaultRoot) -eq $vault) (Get-VaultRoot)
+            } finally {
+                Remove-Item -LiteralPath $rj.Dir -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+        # Re-point at the scratch repo so the write assertions below are isolated.
+        $env:OBSIDIAN_VAULT_ROOT = $tmpRoot
+        . (Join-Path $vault '.system\vault-lib.ps1')
+        T 're-pointed at throwaway repo for write tests' ((Get-VaultRoot) -eq $tmpRoot) (Get-VaultRoot)
 
         $isoNote = 'decisions/Isolation probe.md'
         New-VaultNote -Folder 'decisions' -Name 'Isolation probe' `

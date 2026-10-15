@@ -16,14 +16,48 @@
 
 # --- configuration ---------------------------------------------------------
 
-# Overridable ONLY by environment variable, and only here, at load time.
 # The commit-isolation test must run against a throwaway repo -- a test that
-# writes to live history will eventually pollute it -- and the MCP server
-# inherits whatever this shell has. Deliberately not a -Parameter: a root
-# passed in by a caller is an unvalidated path, and every path guard below
-# resolves against this value.
-$script:VaultRoot = if ($env:OBSIDIAN_VAULT_ROOT) { $env:OBSIDIAN_VAULT_ROOT }
-                    else { 'C:\Users\Home\Documents\ObsidianVault' }
+# writes to live history will eventually pollute it -- so the root is
+# redirectable by env var, but ONLY under two conditions, both required:
+#
+#   1. the target is inside %TEMP%, and
+#   2. it contains the sentinel file `.vault-test-root`.
+#
+# A bare env var would be a hole, not a feature: every verb runs as a fresh
+# process that inherits the agent's shell environment, so an injected line
+# ("set OBSIDIAN_VAULT_ROOT then call append") would repoint every path guard
+# at an attacker-chosen directory and the whole allowlist would resolve
+# against it. The sentinel cannot be satisfied by accident -- nothing outside
+# this test creates that filename -- and TEMP is never a real vault.
+#
+# Deliberately not a -Parameter either: a root passed by a caller is an
+# unvalidated path, and every path guard below resolves against this value.
+$script:VaultRoot  = 'C:\Users\Home\Documents\ObsidianVault'
+$script:TestRoot   = '.vault-test-root'
+$script:RealRoot   = $script:VaultRoot
+# 'unset' | 'honored' | 'ignored'. The isolation test asserts on this rather
+# than on warning capture -- dot-sourcing a plain .ps1 cannot take
+# -WarningVariable (that needs script-level CmdletBinding), so a warning is
+# the wrong channel for a fact a test must be able to check.
+$script:VaultRootOverride = 'unset'
+
+if ($env:OBSIDIAN_VAULT_ROOT) {
+    $candidate = $env:OBSIDIAN_VAULT_ROOT
+    try { $full = [System.IO.Path]::GetFullPath($candidate) } catch { $full = '' }
+    $inTemp = $full -and $full.StartsWith($env:TEMP, [System.StringComparison]::OrdinalIgnoreCase)
+    $sentinel = $inTemp -and (Test-Path -LiteralPath (Join-Path $full $script:TestRoot))
+    if ($sentinel) {
+        $script:VaultRoot = $full
+        $script:VaultRootOverride = 'honored'
+    }
+    else {
+        $script:VaultRootOverride = 'ignored'
+        Write-Warning ("Ignoring OBSIDIAN_VAULT_ROOT='$candidate' -- an override must be inside " +
+                       "%TEMP% and carry a '$($script:TestRoot)' sentinel. Using the real vault.")
+    }
+}
+
+function Get-VaultOverrideStatus { return $script:VaultRootOverride }
 
 # Write verbs may only create files inside these folders.
 $script:WriteFolders = @('inbox', 'entities', 'decisions', 'lessons')
