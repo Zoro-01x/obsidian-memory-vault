@@ -21,6 +21,11 @@ $script:VaultRoot = 'C:\Users\Home\Documents\ObsidianVault'
 # Write verbs may only create files inside these folders.
 $script:WriteFolders = @('inbox', 'entities', 'decisions', 'lessons')
 
+# Files at the vault ROOT that verbs may update. CORE.md must stay maintainable
+# (edit is denied on it, so if no verb could reach it the index would freeze),
+# but it must be an explicit allowlist -- "no folder" must never mean "any file".
+$script:RootFiles = @('CORE.md')
+
 # Never writable, regardless of anything an agent says.
 $script:BlockedFolders = @('.obsidian', '.system', '.git', '.trash')
 
@@ -110,7 +115,11 @@ function Resolve-VaultSafePath {
     }
 
     $norm = $RelativePath -replace '/', '\'
-    $parts = $norm.Split('\') | Where-Object { $_ -ne '' -and $_ -ne '.' }
+    # The @() matters: without it a single-segment path unrolls to a SCALAR,
+    # $parts[0] then yields the first CHARACTER rather than the segment, and
+    # the .Equals(.., StringComparison) call below fails with "Cannot find an
+    # overload for Equals and the argument count: 2". Seen live on 'CORE.md'.
+    $parts = @($norm.Split('\') | Where-Object { $_ -ne '' -and $_ -ne '.' })
 
     if ($parts.Count -eq 0) { throw 'Path resolves to nothing.' }
 
@@ -120,7 +129,13 @@ function Resolve-VaultSafePath {
             throw "Folder '$blocked' is not writable by any verb."
         }
     }
-    if ($top -notin $AllowedFolders) {
+    if ($parts.Count -eq 1) {
+        # Root-level file: must be on the explicit allowlist.
+        if ($script:RootFiles -notcontains $top) {
+            throw "Root file '$top' is not a writable target. Writable root files: $($script:RootFiles -join ', ')."
+        }
+    }
+    elseif ($top -notin $AllowedFolders) {
         throw "Folder '$top' is not an allowed write target. Allowed: $($AllowedFolders -join ', ')"
     }
 
@@ -291,11 +306,19 @@ function Save-VaultCommit {
       write can be undone. Warns loudly when git is absent rather than
       failing silently -- a skipped commit is the one failure mode that
       defeats the whole point of a safety net.
+
+      Stages ONLY the path the verb wrote. The original `add -A` quietly
+      bundled unrelated pending edits (library fixes, other notes) into
+      whatever commit happened next, so commit messages stopped describing
+      their diffs -- which is exactly the audit trail this safety net exists
+      to provide. Pass -Path for a single-file commit, or omit it for an
+      intentional bulk commit.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Message,
-        [string]$Author = 'harness'
+        [string]$Author = 'harness',
+        [string]$Path = ''
     )
     $git = Get-VaultGit
     if (-not $git) {
@@ -304,12 +327,25 @@ function Save-VaultCommit {
     }
 
     $vault = $script:VaultRoot
-    & $git -C $vault add -A 2>$null | Out-Null
+    if ($Path) {
+        $target = $Path -replace '\\', '/'
+        & $git -C $vault add -- $target 2>$null | Out-Null
+    }
+    else {
+        & $git -C $vault add -A 2>$null | Out-Null
+    }
     $pending = & $git -C $vault status --porcelain 2>$null
     if (-not $pending) { return @{ committed = $false; reason = 'nothing to commit' } }
 
     $msg = "[$Author] $Message"
-    & $git -C $vault -c core.autocrlf=false commit -q -m $msg 2>$null | Out-Null
+    # Set the real commit author, not just the message prefix. Previously the
+    # repo identity (Council) was recorded and the agent name existed only as
+    # message text -- reviewable by reading %s, but `git log --author=harness`
+    # could not answer "which agent touched this?", which is the whole point
+    # of attributing commits to a writer.
+    $who   = if ($Author) { $Author } else { 'harness' }
+    $email = (($who -replace '[^A-Za-z0-9._-]', '.') + '@vault.local')
+    & $git -C $vault -c core.autocrlf=false -c user.name=$who -c user.email=$email commit -q -m $msg 2>$null | Out-Null
     $sha = (& $git -C $vault rev-parse --short HEAD 2>$null)
     return @{ committed = $true; sha = $sha; message = $msg }
 }
@@ -331,18 +367,34 @@ function Find-VaultNote {
     $rg = 'C:\Users\Home\tools\rg\ripgrep-14.1.1-x86_64-pc-windows-msvc\rg.exe'
     $hits = @()
 
+    # Split into terms and match ANY of them, ranked below by how many matched.
+    # The previous version passed the whole query as a single pattern, so
+    # "bom encoding utf8" searched for that exact phrase and matched nothing --
+    # and recall is the entry point to the whole memory, so a natural
+    # multi-word query dead-ended exactly where it mattered most.
+    $terms = @($Query -split '\s+' | Where-Object { $_ })
+
     if (Test-Path $rg) {
-        # -m caps per-file matches so one big note can't dominate the budget.
-        $raw = & $rg --files-with-matches -m 3 -i --no-heading -g '*.md' -g '!.obsidian/**' `
-                    -e $Query $script:VaultRoot 2>$null
+        # -F: terms are literal text, so a query containing ( . [ or similar
+        # cannot be read as a regex and error out. -m caps per-file matches so
+        # one big note can't dominate the budget. Multiple -e values OR.
+        $rgArgs = @('--files-with-matches', '-m', '5', '-i', '-F', '--no-heading', '-g', '*.md', '-g', '!.obsidian/**')
+        foreach ($t in $terms) { $rgArgs += @('-e', $t) }
+        $rgArgs += $script:VaultRoot
+        $raw = & $rg @rgArgs 2>$null
         foreach ($f in @($raw)) { if ($f) { $hits += [pscustomobject]@{ Path = $f; Score = 1 } } }
     }
     if ($hits.Count -eq 0) {
         Get-ChildItem -Path $script:VaultRoot -Filter '*.md' -Recurse -File -ErrorAction SilentlyContinue |
             Where-Object { $_.FullName -notmatch '\\\.obsidian\\|\\\.system\\|\\\.git\\' } |
             ForEach-Object {
-                if ([System.IO.File]::ReadAllText($_.FullName) -match [regex]::Escape($Query)) {
-                    $hits += [pscustomobject]@{ Path = $_.FullName; Score = 1 }
+                $txt = [System.IO.File]::ReadAllText($_.FullName)
+                foreach ($t in $terms) {
+                    # Ordinal, not regex: fast and matches literally.
+                    if ($txt.IndexOf($t, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                        $hits += [pscustomobject]@{ Path = $_.FullName; Score = 1 }
+                        break
+                    }
                 }
             }
     }
@@ -354,10 +406,22 @@ function Find-VaultNote {
         $rel  = ConvertTo-VaultRelativePath -Path $h.Path
         $fm   = Read-VaultFrontmatter -Path $h.Path
         $score = 1.0
-        if ($fm.name -and $fm.name -match [regex]::Escape($Query)) { $score += 6 }
-        if ($fm.aliases -and (@($fm.aliases) -join ' ') -match [regex]::Escape($Query)) { $score += 4 }
-        if ($fm.description -and $fm.description -match [regex]::Escape($Query)) { $score += 3 }
-        if ($fm.scope -and $fm.scope -match [regex]::Escape($Query)) { $score += 2 }
+
+        # Score per term, not per query. A note matching three of four query
+        # words is a far better answer than one matching a single word, and
+        # without this both land as equal hits.
+        $aliasTxt = (@($fm.aliases) -join ' ')
+        $matched  = 0
+        foreach ($t in $terms) {
+            $et  = [regex]::Escape($t)
+            $hit = $false
+            if ($fm.name -and $fm.name -match $et)              { $score += 6; $hit = $true }
+            elseif ($aliasTxt -and $aliasTxt -match $et)         { $score += 4; $hit = $true }
+            elseif ($fm.description -and $fm.description -match $et) { $score += 3; $hit = $true }
+            if ($fm.scope -and $fm.scope -match $et)             { $score += 2; $hit = $true }
+            if ($hit) { $matched++ }
+        }
+        if ($matched -gt 1) { $score += $matched * 2 }
         # Recency: an `updated` note beats a forgotten one on the same relevance.
         if ($fm.updated) {
             try {
@@ -602,7 +666,7 @@ function New-VaultNote {
     $content = (ConvertTo-VaultFrontmatter -Data $fm) + "`n" + $Body.Trim() + "`n"
     Write-VaultFileAtomic -FullPath $full -Content $content
 
-    $commit = Save-VaultCommit -Message "create $rel" -Author $Author
+    $commit = Save-VaultCommit -Message "create $rel" -Author $Author -Path $rel
     return [pscustomobject]@{
         Path     = $rel
         FullPath = $full
@@ -772,7 +836,7 @@ function Update-VaultNote {
     $content = (ConvertTo-VaultFrontmatter -Data $fm) + "`n" + $body.Trim() + "`n"
     Write-VaultFileAtomic -FullPath $full -Content $content
 
-    $commit = Save-VaultCommit -Message "$action $RelativePath" -Author $Author
+    $commit = Save-VaultCommit -Message "$action $RelativePath" -Author $Author -Path $RelativePath
     return [pscustomobject]@{ Path = $RelativePath; Action = $action; Commit = $commit.sha; Set = $changed }
 }
 
