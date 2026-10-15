@@ -4,7 +4,7 @@ basis: observed
 description: 'Single-writer protocol: basis provenance, supersession, dedupe, commit contract'
 name: Council write protocol
 scope: council
-status: active
+status: stale
 updated: '2026-10-15'
 ---
 
