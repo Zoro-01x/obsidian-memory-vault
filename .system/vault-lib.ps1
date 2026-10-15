@@ -65,6 +65,32 @@ $script:OptionalFields = @('superseded_by','verified')
 
 function Get-VaultRoot { return $script:VaultRoot }
 
+function ConvertTo-VaultRelativePath {
+    <#
+      Absolute or vault-rooted path -> vault-relative path with backslashes,
+      e.g. 'entities\Obsidian CDP access.md'.
+
+      Retrieval returns RELATIVE paths because that is the only form the read
+      verb accepts -- absolute paths are refused by design. Without this the
+      recall -> read round-trip dead-ends on the very first call, which is
+      exactly the sort of breakage nobody notices until it wastes an hour.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path)
+
+    $candidate = $Path
+    if (-not [System.IO.Path]::IsPathRooted($candidate)) {
+        $candidate = Join-Path $script:VaultRoot $candidate
+    }
+    try { $full = [System.IO.Path]::GetFullPath($candidate) } catch { return $Path }
+
+    $root = [System.IO.Path]::GetFullPath($script:VaultRoot)
+    if ($full.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) {
+        return $full.Substring($root.Length).TrimStart('\', '/')
+    }
+    return $Path
+}
+
 # --- path safety -----------------------------------------------------------
 
 function Resolve-VaultSafePath {
@@ -323,7 +349,10 @@ function Find-VaultNote {
 
     # Boost: a hit in name/description/aliases outranks a hit deep in prose.
     $scored = foreach ($h in $hits) {
-        $fm = Read-VaultFrontmatter -Path $h.Path
+        # Keep the absolute path for reading, but HAND BACK a vault-relative
+        # one: that is the form the read verb accepts.
+        $rel  = ConvertTo-VaultRelativePath -Path $h.Path
+        $fm   = Read-VaultFrontmatter -Path $h.Path
         $score = 1.0
         if ($fm.name -and $fm.name -match [regex]::Escape($Query)) { $score += 6 }
         if ($fm.aliases -and (@($fm.aliases) -join ' ') -match [regex]::Escape($Query)) { $score += 4 }
@@ -338,10 +367,11 @@ function Find-VaultNote {
         }
         # Stale/superseded notes should surface below active ones, not vanish.
         if ($fm.status -eq 'stale' -or $fm.status -eq 'superseded') { $score -= 2 }
+        $folder = Split-Path -Parent $rel
         [pscustomobject]@{
-            Path        = $h.Path
-            Name        = if ($fm.name) { $fm.name } else { [System.IO.Path]::GetFileNameWithoutExtension($h.Path) }
-            Folder      = [System.IO.Path]::GetFileName((Split-Path -Parent $h.Path))
+            Path        = $rel
+            Name        = if ($fm.name) { $fm.name } else { [System.IO.Path]::GetFileNameWithoutExtension($rel) }
+            Folder      = if ($folder) { $folder } else { '(root)' }
             Basis       = $fm.basis
             Scope       = $fm.scope
             Status      = $fm.status
@@ -419,6 +449,18 @@ function Get-VaultCore {
     return $text
 }
 
+function Test-VaultCodeShaped {
+    <#
+      Does this note describe code or environment state? Shared by validation
+      (which requires a `verified` date on such notes) and the prune pass
+      (which re-surfaces them when verification goes stale), so the two never
+      disagree about what counts.
+    #>
+    [CmdletBinding()]
+    param([string]$Text)
+    return [bool]($Text -match '(?i)\b(code|repo|version|driver|install|config|api|path|command|flag|cli|dependency|package|port)\b')
+}
+
 function Test-VaultNote {
     <#
       True when the note passes every write-time rule. Used by the promotion
@@ -441,8 +483,7 @@ function Test-VaultNote {
     # confident memory about code that has since changed. Any note about code
     # or environment state must carry a verified date so it can be rechecked
     # before it is relied on.
-    $codeShaped = "$($fm.description) $($Path)" -match '(?i)\b(code|repo|version|driver|install|config|api|path|command|flag|cli|dependency|package)\b'
-    if ($codeShaped -and -not $fm.verified) {
+    if ((Test-VaultCodeShaped -Text "$($fm.description) $($Path)") -and -not $fm.verified) {
         $problems += 'missing `verified` date (this note is about code/environment state)'
     }
 
@@ -670,6 +711,80 @@ function Get-VaultStats {
                     Measure-Object -Sum).Sum
         Folders = ($byFolder | ForEach-Object { "$($_.Name)=$($_.Count)" }) -join '  '
     }
+}
+
+function Get-VaultStale {
+    <#
+      THE PRUNE / VERIFY PASS. Two decay modes this exists to surface:
+
+        1. An inbox nobody drains. Nothing gets consolidated and the folder
+           turns into a graveyard of half-trusted claims. Rule: surface inbox
+           items older than ~InboxDays and either promote or delete them.
+        2. Stale code facts. A note confidently describing a driver, a port,
+           a version or a path that has since changed. Without this pass,
+           `verified` would just be decoration.
+
+      It also reports notes already marked stale/superseded, so the status
+      field gets acted on instead of being written once and forgotten.
+
+      Read-only. Deletion is a human/agent decision with git as the safety
+      net -- no verb here removes anything.
+    #>
+    [CmdletBinding()]
+    param(
+        [int]$InboxDays   = 7,
+        [int]$VerifiedDays = 90
+    )
+    $now = Get-Date
+    $rows = @()
+
+    $files = Get-ChildItem -Path $script:VaultRoot -Filter '*.md' -Recurse -File -ErrorAction SilentlyContinue |
+             Where-Object { $_.FullName -notmatch '\\\.obsidian\\|\\\.system\\|\\\.git\\' }
+
+    foreach ($f in $files) {
+        $rel    = $f.FullName.Substring($script:VaultRoot.Length + 1)
+        $folder = $f.Directory.Name
+        $fm     = Read-VaultFrontmatter -Path $f.FullName
+
+        $ageDays = $null
+        if ($fm.updated) { try { $ageDays = [int]($now - [datetime]$fm.updated).TotalDays } catch { } }
+
+        $reasons = @()
+
+        if ($folder -eq 'inbox' -and $null -ne $ageDays -and $ageDays -ge $InboxDays) {
+            $reasons += "inbox item $ageDays days old -- drain it (promote or delete)"
+        }
+        if ($fm.status -eq 'stale')     { $reasons += 'marked stale' }
+        if ($fm.status -eq 'superseded') {
+            $by = if ($fm.superseded_by) { " by '$($fm.superseded_by)'" } else { '' }
+            $reasons += "superseded$by"
+        }
+
+        # The verification clock. A code/environment note that has not been
+        # rechecked recently is a claim, not a fact.
+        if ($fm.verified) {
+            try {
+                $vAge = [int]($now - [datetime]$fm.verified).TotalDays
+                if ($vAge -ge $VerifiedDays) { $reasons += "not verified for $vAge days -- recheck before relying on it" }
+            } catch { }
+        }
+        elseif (Test-VaultCodeShaped -Text "$($fm.description) $rel") {
+            $reasons += 'about code/environment but has NO verified date'
+        }
+
+        if ($reasons.Count) {
+            $rows += [pscustomobject]@{
+                Path     = $rel
+                Folder   = $folder
+                Reasons  = $reasons
+                Updated  = $fm.updated
+                Verified = $fm.verified
+                Status   = $fm.status
+                AgeDays  = $ageDays
+            }
+        }
+    }
+    return ($rows | Sort-Object Folder, Path)
 }
 
 # NOTE: this file is dot-sourced, not imported as a module, so there is no
