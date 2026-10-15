@@ -1,0 +1,21 @@
+# Normalize line endings so a checkout is byte-identical no matter what the
+# clone's core.autocrlf is set to.
+#
+# Why this exists: on 2026-10-15 a restore proof cloned this vault onto a
+# machine with the Git for Windows default (core.autocrlf=true) and every text
+# file came back with CRLF endings, so CORE.md read 5306 bytes on disk against
+# 5191 in the live vault. The blob hashes matched, so nothing was lost -- but
+# anything that counts or hashes on-disk bytes (token budgeting, byte-identical
+# restore checks) would then behave differently after a restore than it does in
+# the live vault. Pinning eol makes the restore deterministic.
+#
+# LF is the pin, not CRLF: it matches what the live vault already uses and what
+# the object store already holds for most files.
+*.md      text eol=lf
+*.ps1     text eol=lf
+*.mjs     text eol=lf
+*.json    text eol=lf
+.gitignore text eol=lf
+
+# Shell scripts must never be checked out with CRLF: bash cannot run them.
+*.sh      text eol=lf
