@@ -16,3 +16,7 @@ verified: '2026-10-14'
 - **OEM codepage**: `[Console]::In` decodes redirected stdin with the console OEM codepage, not UTF-8, so non-ASCII text (em dashes, curly quotes) becomes mojibake on disk. Read raw bytes from stdin and decode with `UTF8Encoding` yourself.
 
 **Rule:** anything longer than a word -- a note body, a script, JS -- travels as UTF-8 on stdin.
+
+## Verified by
+
+Adapter test: the em dash and the curly quotes survived the round trip, and the commit landed.
