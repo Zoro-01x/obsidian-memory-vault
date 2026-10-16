@@ -1,7 +1,7 @@
 ---
 aliases: ['handoff', 'build state', 'council progress', 'resume point', 'current state']
 basis: observed
-description: 'Handoff: single-writer memory vault built, MCP connected, origin exists but one commit unpushed. Read to resume cold -- includes what was abandoned and why.'
+description: 'Handoff: single-writer memory vault built, MCP connected, 7 verbs tested, pre-push gate documented. Read to resume cold -- includes what was abandoned and why.'
 name: Council memory build state
 scope: council
 status: active
@@ -25,6 +25,8 @@ It records four different kinds of claim, and they go stale at different rates. 
 | A feature is not implemented | inbox auto-draining | read the code |
 
 Test counts are deliberately **not** written into this note. They were stale within a week last time. Run the command; the expected outcome is "all pass, zero fail". A shrinking pass count is a finding, not noise -- investigate before updating anything.
+
+The same applies to git sync state. A hardcoded "ahead N" is wrong the moment the next push lands, so this note records the **command** and the last push, not a value. Run the command.
 
 ## Built, committed
 
@@ -56,6 +58,17 @@ Run the cold-start test after **any** wrapper, config, or Node change. A wrapper
 
 **On the write-test count:** the source contains 35 `T` calls but executes 33 assertions, because 5 try/catch pairs run one branch each and the mutable-field check is a loop over 5 fields. The executed count has shifted across the isolation rewrite (commit 6fd75f9). Whether a specific assertion was removed or merged in that rewrite is **not yet confirmed** -- check `git log -p -- .system/write-validation-test.ps1` before making any claim about it.
 
+## Pre-push gate
+
+Before any push, in this order:
+
+1. `powershell -NoProfile -ExecutionPolicy Bypass -File .system/pre-push-scan.ps1 -SelfTest` -- must exit 0. If this fails the scan's verdict is void (exit 2), because a detector that silently matches nothing reports "clean" just like one that found nothing.
+2. `powershell -NoProfile -ExecutionPolicy Bypass -File .system/pre-push-scan.ps1` -- must exit 0. It scans **every commit in history**, not just the working tree, because a secret committed and later scrubbed still ships in old commits.
+3. Push plainly. No `--force`, no `--no-verify`. Confirm the remote is the intended one first.
+4. Verify after: `git status -sb` shows no `[ahead]`, and `git ls-remote origin main` equals local `git rev-parse HEAD`.
+
+**Verified 2026-10-16**: self-test PASSED (6 detectors, planted-then-scrubbed bait), full scan of 43 commits clean, 0 new findings in the push range, plain push landed, remote hash matched local, visibility re-checked PRIVATE.
+
 ## Verified working (what the tests establish)
 
 - **Write-time validation**: a code-shaped note with no `verified` is refused, `verified: recently` is refused, `status: banana` is refused, and **no file is written on refusal**. Before this, the schema was advisory -- `New-VaultNote` never called the validator.
@@ -68,15 +81,16 @@ Run the cold-start test after **any** wrapper, config, or Node change. A wrapper
 
 ## State as verified on 2026-10-16
 
-- **MCP**: `opencode mcp list` reports `vault connected`, and all 7 verbs respond. (The previous version of this note said it was not connected. That was stale.)
-- **Notes**: 6, all on the migrated schema, all carrying `basis:`.
+- **MCP**: `opencode mcp list` reports `vault connected`, and all 7 verbs respond. (An earlier version of this note said it was not connected. That was stale.)
+- **Notes**: 6 in `decisions/`+`entities/`+`lessons/` plus 1 in `inbox/`, all on the migrated schema, all carrying `basis:`. All are tracked and on origin -- confirmed with `git ls-files`, since an untracked note would make any "backup" claim hollow.
 - **Obsidian**: not running, port 9223 not listening. This does **not** affect the 7 verbs -- they do not need it. Only the human-viewer half is offline.
-- **Git sync**: `main...origin/main [ahead 1]`. Local HEAD `a97db7d`, origin `a58c305`.
-- **The note migration itself IS pushed.** The commit that moved notes onto the new schema is `2fe75c5`, an ancestor of `origin/main`. The unpushed `a97db7d` is **named** "[migrate] migrate frontmatter..." but touches **zero note files** -- it only changes `.system/cold-start-test.mjs` and `.system/migrate-schema.ps1`. Do not infer commit contents from commit titles; I did that once and it was wrong.
+- **Git sync**: run `git status -sb` -- do not trust a value written here. **Last push: `435be80` on 2026-10-16**, after the pre-push gate above passed. That push carried the corrected version of this note.
+- **The note migration itself IS pushed.** The commit that moved notes onto the new schema is `2fe75c5`, an ancestor of `origin/main`. Worth knowing for the next reader: `a97db7d` is **named** "[migrate] migrate frontmatter..." but touches **zero note files** -- it only changes `.system/cold-start-test.mjs` and `.system/migrate-schema.ps1`. Do not infer commit contents from commit titles; I did that once and it was wrong.
+- **Authorship**: commits are authored by synthetic local identities (`migrate@`, `harness@`), never by Zoro. `pre-push-scan.ps1` reports "Author identities are local-only" -- nothing real leaks, and nothing links to a person. That is correct for a private repo. If this is ever published as proof of work, the honest framing is "built by Zoro with an OpenCode agent" -- do not disguise agent-authored work as solo work, and do not rewrite history to retrofit identities (force-pushing the only off-disk copy for a cosmetic fix is a bad trade).
 
 ## Known gaps
 
-- **Backup is not current.** Origin exists, but one commit is unpushed, so the off-disk copy does not contain the latest work. Pushing is a decision for Zoro -- it is the only external write in this system.
+- **Pushing is a decision for Zoro**, and the only external write in this system. No agent triggers it unasked -- a broad "execute" does not cover it. The backup was current as of the last push above; it is **not necessarily current now**, hence the recheck command in the table at the top.
 - Gemini/Claude consults are not wired back in as sources. Brave CDP on :9222 still works for a manual consult.
 - The inbox drains by the 7-day rule surfaced by the `stale` verb; nothing drains it automatically. **Not built, by choice** -- do not "fix" this without asking.
 - The 34->33 assertion question above is unresolved.
