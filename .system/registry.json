@@ -1,0 +1,91 @@
+{
+  "_about": [
+    "SINGLE SOURCE OF TRUTH for every closed vocabulary the vault enforces.",
+    "",
+    "WHY THIS FILE EXISTS (found 2026-10-17): vault-mcp.mjs hand-maintained a",
+    "VERBS array separate from its TOOLS catalogue. When `verify` was added to",
+    "TOOLS it was missed in VERBS, so tools/list ADVERTISED a tool that every",
+    "call rejected with 'has no adapter verb'. Visible and unreachable -- the",
+    "worst shape, because the failure surfaces at call time in a different code",
+    "path from the registration.",
+    "",
+    "It was not a one-off. On the same date, six more closed vocabularies were",
+    "found duplicated across vault-lib.ps1 and vault-mcp.mjs, and ONE HAD ALREADY",
+    "DRIFTED: WriteFolders had four entries (incl. 'inbox') while the MCP create",
+    "enum had three. That one is deliberate -- see createFolders below -- but",
+    "nothing said so, so it was indistinguishable from a bug.",
+    "",
+    "The rule: any two literals that must stay equal, maintained by hand, will",
+    "eventually disagree. Derive one from the other so drift is unrepresentable.",
+    "",
+    "CONSUMERS",
+    "  vault-lib.ps1   dot-sources this at load. FAILS CLOSED: a missing or",
+    "                  malformed registry throws before any verb runs.",
+    "  vault-mcp.mjs   reads this at startup and derives every enum.",
+    "  registry-test.ps1  guard tests. Its expectations are written as LITERALS,",
+    "                  never derived from this file -- a check built from the",
+    "                  thing it checks proves nothing. See that file's header."
+  ],
+
+  "writeFolders": ["inbox", "entities", "decisions", "lessons"],
+  "_createFolders": [
+    "NOT a subset bug. `create` may write only the three permanent folders;",
+    "`inbox` is reached via `propose`, which calls New-VaultNote -Folder 'inbox'",
+    "internally. The MCP create enum deliberately narrows to the three so an",
+    "agent cannot bypass the inbox's review queue by calling create directly.",
+    "PowerShell's guard keeps all four because propose depends on it.",
+    "Kept as two named lists rather than one so this difference stays EXPLAINED.",
+    "If you unify them, propose breaks or the inbox review queue becomes optional."
+  ],
+  "createFolders": ["entities", "decisions", "lessons"],
+
+  "rootFiles": ["CORE.md"],
+  "blockedFolders": [".obsidian", ".system", ".git", ".trash"],
+
+  "status": ["active", "superseded", "stale"],
+  "basis": ["user-stated", "observed", "external-model", "inferred"],
+
+  "requiredFields": ["name", "description", "aliases", "status", "updated", "basis", "scope"],
+  "optionalFields": ["superseded_by", "verified"],
+
+  "mutableKeys": [
+    "description", "aliases", "status", "basis", "scope", "superseded_by"
+  ],
+  "_immutableKeys": [
+    "`verified` was REMOVED from the mutable set on 2026-10-17 on the joint",
+    "recommendation of two independent consultations. A model that can re-stamp",
+    "`verified` on a note it already wrote is certifying its own homework, and",
+    "git history keeps the unverified original while the note still READS as",
+    "verified. Re-verification is the `verify` verb's job.",
+    "",
+    "`name` and `updated` are immutable for separate reasons: renaming means a",
+    "new note plus a supersede pointer, and `updated` is always today so an edit",
+    "cannot be backdated.",
+    "",
+    "`probe_*` is immutable because a probe the writer can tune after seeing its",
+    "result is a second opinion wearing a lab coat."
+  ],
+  "immutableKeys": [
+    "name", "updated", "created", "type", "author", "verified",
+    "probe_kind", "probe_target", "probe_pattern", "probe_suite"
+  ],
+
+  "probeKinds": ["path_exists", "file_hash", "symbol_present", "suite"],
+  "_probeSuites": [
+    "`suite` names a test by ID and NEVER carries a command string. An arbitrary",
+    "command with the agent's authority behind it would make verify an injection",
+    "surface, which is strictly worse than having no verifier at all."
+  ],
+  "probeSuites": ["smoke", "cold-start", "native-stderr", "write-validation"],
+  "minProbePatternLength": 6,
+
+  "verbs": ["core", "recall", "read", "create", "append", "propose", "stale", "verify"],
+  "_verbs": [
+    "The adapter's switch is the implementation; this list is the CONTRACT. The",
+    "contract lives here so the MCP layer can derive from it instead of keeping",
+    "its own copy. registry-test.ps1 calls every one of these against a scratch",
+    "vault and asserts none returns 'Unknown verb' -- an empirical check of the",
+    "adapter against the contract, which is the direction introspection cannot",
+    "reach on Windows PowerShell 5.1."
+  ]
+}

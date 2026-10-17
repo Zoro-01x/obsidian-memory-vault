@@ -59,25 +59,82 @@ if ($env:OBSIDIAN_VAULT_ROOT) {
 
 function Get-VaultOverrideStatus { return $script:VaultRootOverride }
 
+# --- registry: the single source of truth -----------------------------------
+#
+# Every closed vocabulary below used to be a literal here AND a literal in
+# vault-mcp.mjs. On 2026-10-17 one of those pairs had already drifted, and a
+# second (VERBS vs the TOOLS catalogue) had shipped a tool that was advertised
+# but undispatchable. See registry.json for the full account.
+#
+# The registry is loaded BEFORE anything else and FAILS CLOSED. That is
+# deliberate: bug 1 in this file's history was a single parse error taking down
+# every verb, so a missing or malformed registry must refuse to load loudly
+# rather than fall back to defaults -- a silently-defaulted registry would
+# enforce the WRONG vocabulary, which is worse than no vocabulary at all.
+$script:RegistryPath = Join-Path $PSScriptRoot 'registry.json'
+
+if (-not (Test-Path -LiteralPath $script:RegistryPath)) {
+    throw ("vault-lib: registry.json is MISSING at '$script:RegistryPath'. " +
+           "It is the single source of truth for every closed vocabulary " +
+           "(folders, status, basis, probe kinds, verbs). Loading without it " +
+           "would silently enforce the wrong rules, so the library refuses to load.")
+}
+
+try {
+    $rawReg = [System.IO.File]::ReadAllText($script:RegistryPath)
+    $script:VaultRegistry = $rawReg | ConvertFrom-Json
+}
+catch {
+    throw ("vault-lib: registry.json could not be parsed -- $($_.Exception.Message). " +
+           "Refusing to load rather than enforce a partial vocabulary.")
+}
+
+# Every required key is checked up front. A registry that parses but is missing
+# a key would otherwise surface as an empty @() -- and an empty allowlist fails
+# OPEN (nothing is forbidden), which is the opposite of what we want.
+foreach ($regKey in @('writeFolders','createFolders','rootFiles','blockedFolders',
+                      'status','basis','requiredFields','optionalFields',
+                      'mutableKeys','immutableKeys','probeKinds','probeSuites',
+                      'minProbePatternLength','verbs')) {
+    if (-not ($script:VaultRegistry.PSObject.Properties.Name -contains $regKey)) {
+        throw "vault-lib: registry.json is missing required key '$regKey'. Refusing to load."
+    }
+    if ($null -eq $script:VaultRegistry.$regKey) {
+        throw "vault-lib: registry.json has '$regKey' = null. Refusing to load."
+    }
+}
+
+# An empty array in a JSON file reads back as $null in PS 5.1's ConvertFrom-Json
+# only when the value is literally absent; `[]` yields an empty array. Both are
+# fatal for an allowlist, so both are refused.
+foreach ($listKey in @('writeFolders','createFolders','rootFiles','blockedFolders',
+                       'status','basis','requiredFields','optionalFields',
+                       'mutableKeys','immutableKeys','probeKinds','probeSuites','verbs')) {
+    if (@($script:VaultRegistry.$listKey).Count -eq 0) {
+        throw "vault-lib: registry.json key '$listKey' is empty. An empty allowlist fails open. Refusing to load."
+    }
+}
+
+# --- the vocabularies, derived ------------------------------------------------
+
 # Write verbs may only create files inside these folders.
-$script:WriteFolders = @('inbox', 'entities', 'decisions', 'lessons')
+$script:WriteFolders   = @($script:VaultRegistry.writeFolders)
+
+# Narrower than WriteFolders ON PURPOSE: `inbox` is reached through `propose`,
+# which calls New-VaultNote -Folder 'inbox' internally. Exposing inbox on the
+# MCP `create` enum would let an agent bypass the inbox's review queue by
+# calling create directly. registry.json explains this in _createFolders.
+$script:CreateFolders  = @($script:VaultRegistry.createFolders)
 
 # Files at the vault ROOT that verbs may update. CORE.md must stay maintainable
 # (edit is denied on it, so if no verb could reach it the index would freeze),
 # but it must be an explicit allowlist -- "no folder" must never mean "any file".
-$script:RootFiles = @('CORE.md')
+$script:RootFiles      = @($script:VaultRegistry.rootFiles)
 
 # Never writable, regardless of anything an agent says.
-$script:BlockedFolders = @('.obsidian', '.system', '.git', '.trash')
+$script:BlockedFolders = @($script:VaultRegistry.blockedFolders)
 
-# Windows reserved device names -- writing these corrupts paths.
-$script:ReservedNames = @(
-    'CON','PRN','AUX','NUL',
-    'COM1','COM2','COM3','COM4','COM5','COM6','COM7','COM8','COM9',
-    'LPT1','LPT2','LPT3','LPT4','LPT5','LPT6','LPT7','LPT8','LPT9'
-)
-
-$script:ValidStatus = @('active','superseded','stale')
+$script:ValidStatus    = @($script:VaultRegistry.status)
 
 # `basis` replaces the old source + confidence pair. Provenance still matters
 # with a single writer, because external-model claims are where hallucination
@@ -86,28 +143,17 @@ $script:ValidStatus = @('active','superseded','stale')
 #   observed        -- you verified it yourself
 #   external-model  -- Gemini/Claude/web said it, unverified
 #   inferred        -- you concluded it
-$script:ValidBasis = @('user-stated','observed','external-model','inferred')
+$script:ValidBasis     = @($script:VaultRegistry.basis)
 
-# The only frontmatter the harness may set. Resist adding more: extra fields
-# get filled inconsistently, and inconsistent frontmatter breaks retrieval.
-#
-# Dropped in the single-writer revision (was: type, created, source,
-#   confidence):
-#   type      -- redundant with the folder, which the path allowlist already
-#                enforces. Two sources of truth for one fact can disagree.
-#   created   -- git history has it, with an author and a diff.
-#   source    -- merged into `basis`.
-#   confidence-- merged into `basis`.
-#
-# Added:
-#   scope     -- which project/repo this applies to. Without it, a convention
-#                learned in one repo leaks into another.
-#   verified  -- optional date; REQUIRED for notes about code or environment
-#                state, because stale code facts are the dominant failure mode.
-$script:RequiredFields = @('name','description','aliases','status',
-                           'updated','basis','scope')
+$script:RequiredFields = @($script:VaultRegistry.requiredFields)
+$script:OptionalFields = @($script:VaultRegistry.optionalFields)
 
-$script:OptionalFields = @('superseded_by','verified')
+# Windows reserved device names -- writing these corrupts paths.
+$script:ReservedNames = @(
+    'CON','PRN','AUX','NUL',
+    'COM1','COM2','COM3','COM4','COM5','COM6','COM7','COM8','COM9',
+    'LPT1','LPT2','LPT3','LPT4','LPT5','LPT6','LPT7','LPT8','LPT9'
+)
 
 # --- verification probes ---------------------------------------------------
 # A `verify` must be a WITNESS, not a second opinion in a lab coat. Claude's
@@ -116,19 +162,21 @@ $script:OptionalFields = @('superseded_by','verified')
 # caller-supplied text can move the outcome, it is grading prose.
 #
 # So the probe spec lives in the NOTE, declared at create time and never
-# mutable afterwards. The caller names a note and NOTHING else. These four
-# kinds are the entire registry -- deliberately closed. Free-form commands
-# would turn verify into an injection surface running with the agent's
-# authority, which is strictly worse than having no verifier at all.
-$script:ValidProbeKinds = @('path_exists','file_hash','symbol_present','suite')
+# mutable afterwards. The caller names a note and NOTHING else. These kinds are
+# the entire registry -- deliberately closed. Free-form commands would turn
+# verify into an injection surface running with the agent's authority, which is
+# strictly worse than having no verifier at all.
+$script:ValidProbeKinds = @($script:VaultRegistry.probeKinds)
 
 # `suite` names a test by ID; it never carries a command string. Same reason.
-$script:AllowedProbeSuites = @('smoke','cold-start','native-stderr','write-validation')
+$script:AllowedProbeSuites = @($script:VaultRegistry.probeSuites)
 
 # A pattern that matches everything proves nothing -- it would pass against a
 # note that has no such symbol at all. Claude called this the can-fail control;
 # refusing trivial patterns is the cheap half of it.
-$script:MinProbePatternLength = 6
+$script:MinProbePatternLength = [int]$script:VaultRegistry.minProbePatternLength
+
+$script:ValidVerbs = @($script:VaultRegistry.verbs)
 
 function Get-VaultRoot { return $script:VaultRoot }
 
@@ -833,20 +881,42 @@ function New-VaultNote {
         [Parameter(Mandatory)][string]$Description,
         [Parameter(Mandatory)][string]$Body,
         [string[]]$Aliases = @(),
-        [ValidateSet('active','superseded','stale')]
         [string]$Status = 'active',
-        [ValidateSet('user-stated','observed','external-model','inferred')]
         [string]$Basis = 'inferred',
         [Parameter(Mandatory)][string]$Scope,          # which project/repo this applies to
         [string]$Verified = '',                        # required for code/env-state notes
         [string]$SupersededBy = '',
-        [ValidateSet('','path_exists','file_hash','symbol_present','suite')]
         [string]$ProbeKind = '',                      # how a later session re-checks this note
         [string]$ProbeTarget = '',                    # vault-relative; never absolute
         [string]$ProbePattern = '',                   # symbol_present only
         [string]$ProbeSuite = '',                     # suite only; an ID, never a command
         [string]$Author = 'harness'                    # git author only; NOT written to frontmatter
     )
+
+    # NO [ValidateSet] on Status / Basis / ProbeKind / ProbeSuite. They carried
+    # literal lists, which made them a THIRD and FOURTH copy of vocabularies
+    # that also lived in $script:ValidStatus / $script:ValidBasis /
+    # $script:ValidProbeKinds / $script:AllowedProbeSuites and in
+    # vault-mcp.mjs. ValidateSet is evaluated at PARSE time and cannot read a
+    # variable -- IValidateSetValuesGenerator is PowerShell 6+, not Windows
+    # PowerShell 5.1 -- so it was structurally incapable of deriving.
+    #
+    # These guards read the registry instead, and still reject BEFORE any byte
+    # is written: the file write happens well after this point. They duplicate
+    # Test-VaultData's checks on purpose (defense in depth), but both read the
+    # same registry, so there is still one source of truth for the vocabulary.
+    if ($Status -and $Status -notin $script:ValidStatus) {
+        throw "invalid status: '$Status'. Allowed: $($script:ValidStatus -join ', ')"
+    }
+    if ($Basis -and $Basis -notin $script:ValidBasis) {
+        throw "invalid basis: '$Basis'. Allowed: $($script:ValidBasis -join ', ')"
+    }
+    if ($ProbeKind -and $ProbeKind -notin $script:ValidProbeKinds) {
+        throw "invalid probe_kind: '$ProbeKind'. Allowed: $($script:ValidProbeKinds -join ', ')"
+    }
+    if ($ProbeSuite -and $ProbeSuite -notin $script:AllowedProbeSuites) {
+        throw "invalid probe_suite: '$ProbeSuite'. Allowed: $($script:AllowedProbeSuites -join ', ')"
+    }
 
     $clean = Test-SafeNoteName -Name $Name
     $rel   = "$Folder\$clean.md"
@@ -966,7 +1036,8 @@ function Add-VaultInboxItem {
         [Parameter(Mandatory)][string]$Claim,
         [string[]]$Aliases = @(),
         [string[]]$Links = @(),
-        [ValidateSet('user-stated','observed','external-model','inferred')]
+        # No ValidateSet -- see the note in New-VaultNote. That verb now guards
+        # Basis against the registry, and every path here ends at it.
         [string]$Basis = 'external-model',
         [Parameter(Mandatory)][string]$Scope,
         [string]$Author = 'harness'
@@ -1094,7 +1165,14 @@ function Update-VaultNote {
     # it executes a probe and appends to an evidence log the write verbs cannot
     # reach. A model may declare `verified` when creating a fresh note; it can
     # never re-certify one after the fact.
-    $mutable  = @('description', 'aliases', 'status', 'basis', 'scope', 'superseded_by')
+    #
+    # The list itself now comes from registry.json rather than a literal here.
+    # It had ALSO been duplicated in vault-mcp.mjs's documented `set` whitelist,
+    # which is how the two could disagree about what `verified` meant. Note the
+    # name split that survives deliberately: the MCP schema exposes camelCase
+    # `supersededBy`, the adapter normalises it to snake_case at line ~220, and
+    # the registry records the snake_case form the library actually enforces.
+    $mutable  = @($script:VaultRegistry.mutableKeys)
     $changed  = @()
     foreach ($k in @($Set.Keys)) {
         if ($mutable -notcontains $k) {

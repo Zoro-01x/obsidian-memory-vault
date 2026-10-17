@@ -21,6 +21,7 @@
 
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const ADAPTER = fileURLToPath(new URL("./vault-adapter.ps1", import.meta.url));
@@ -28,7 +29,53 @@ const SPAWN_TIMEOUT_MS = 45_000;
 
 const log = (msg) => { try { process.stderr.write(`[vault-mcp] ${msg}\n`); } catch {} };
 
-const BASIS = ["user-stated", "observed", "external-model", "inferred"];
+// ---------------------------------------------------------------------------
+// registry: the single source of truth
+//
+// Every enum below used to be a literal here, duplicated in vault-lib.ps1. One
+// pair had ALREADY drifted (WriteFolders had four entries, this file's create
+// enum had three), and a second -- VERBS vs the TOOLS catalogue -- shipped
+// `verify` as advertised-but-undispatchable. See registry.json for the account.
+//
+// FAILS CLOSED, on purpose. A silently-defaulted registry would enforce the
+// wrong vocabulary, which is worse than enforcing none, and vault-lib's own
+// history is a single parse error taking down every verb.
+// ---------------------------------------------------------------------------
+const REGISTRY_PATH = fileURLToPath(new URL("./registry.json", import.meta.url));
+
+let REG;
+try {
+  REG = JSON.parse(readFileSync(REGISTRY_PATH, "utf8"));
+} catch (err) {
+  process.stderr.write(
+    `[vault-mcp] FATAL: registry.json is missing or unparseable at ${REGISTRY_PATH}: ${err.message}\n` +
+    `[vault-mcp] Refusing to start. It is the single source of truth for every closed vocabulary.\n`,
+  );
+  process.exit(1);
+}
+
+// A key that is missing reads back as undefined, and `enum: undefined` in a
+// JSON schema simply never constrains -- an empty allowlist that fails OPEN.
+// Refuse instead.
+for (const key of [
+  "writeFolders", "createFolders", "rootFiles", "blockedFolders",
+  "status", "basis", "mutableKeys", "immutableKeys",
+  "probeKinds", "probeSuites", "verbs",
+]) {
+  if (!Array.isArray(REG[key]) || REG[key].length === 0) {
+    process.stderr.write(
+      `[vault-mcp] FATAL: registry.json key '${key}' is missing, not an array, or empty.\n` +
+      `[vault-mcp] An empty allowlist fails open. Refusing to start.\n`,
+    );
+    process.exit(1);
+  }
+}
+
+const FOLDERS     = REG.createFolders;
+const STATUS      = REG.status;
+const BASIS       = REG.basis;
+const PROBE_KINDS = REG.probeKinds;
+const PROBE_SUITES= REG.probeSuites;
 
 // ---------------------------------------------------------------------------
 // tool catalogue
@@ -93,25 +140,25 @@ const TOOLS = [
       type: "object",
       required: ["folder", "name", "description", "body", "scope"],
       properties: {
-        folder: { type: "string", enum: ["entities", "decisions", "lessons"] },
+        folder: { type: "string", enum: FOLDERS },
         name: { type: "string", description: "Human-facing title; becomes the filename." },
         description: { type: "string", description: "One-line retrieval hook. What would someone search for to find this?" },
         body: { type: "string", description: "Markdown body. Facts, not instructions." },
         scope: { type: "string", description: "Which project/repo this applies to, e.g. 'council', 'machine', 'obsidian-app'. Without it conventions leak between repos." },
         basis: { type: "string", enum: BASIS, description: "Provenance: user-stated | observed | external-model | inferred.", default: "inferred" },
-        status: { type: "string", enum: ["active", "superseded", "stale"], default: "active" },
+        status: { type: "string", enum: STATUS, default: "active" },
         aliases: { type: "array", items: { type: "string" }, description: "Alternate names, so retrieval finds it under other vocabularies." },
         verified: { type: "string", description: "YYYY-MM-DD. REQUIRED when the note is about code/environment state." },
         supersededBy: { type: "string", description: "Title of the note that replaced this one (when status is superseded)." },
         probeKind: {
-          type: "string", enum: ["path_exists", "file_hash", "symbol_present", "suite"],
+          type: "string", enum: PROBE_KINDS,
           description:
             "Declares HOW a later session re-checks this note without asking a model. Frozen at create time and never mutable afterwards -- " +
             "a probe the writer can rewrite after seeing its result proves nothing. Omit it and the note verifies as 'unverifiable'.",
         },
         probeTarget: { type: "string", description: "Vault-relative path the probe observes. Absolute paths and '..' traversal are refused." },
         probePattern: { type: "string", description: "symbol_present only. Regex, min 6 chars -- a pattern matching everything proves nothing." },
-        probeSuite: { type: "string", enum: ["smoke", "cold-start", "native-stderr", "write-validation"], description: "suite only. A test by ID, never a command string." },
+        probeSuite: { type: "string", enum: PROBE_SUITES, description: "suite only. A test by ID, never a command string." },
         author: { type: "string", description: "Git commit author (default 'harness'). Not written to frontmatter." },
       },
       additionalProperties: false,
@@ -139,7 +186,7 @@ const TOOLS = [
             "homework. Re-verification is the `verify` verb's job -- it runs a probe and records evidence the write verbs cannot reach.",
           properties: {
             description: { type: "string" },
-            status: { type: "string", enum: ["active", "superseded", "stale"] },
+            status: { type: "string", enum: STATUS },
             basis: { type: "string", enum: BASIS },
             scope: { type: "string" },
             aliases: { type: "array", items: { type: "string" } },
@@ -213,6 +260,29 @@ const TOOLS = [
 // tools/list advertised a tool that every call rejected with "has no adapter
 // verb". One list, derived from the catalogue, cannot drift.
 const VERBS = TOOLS.map((t) => t.name);
+
+// ...but TOOLS and the registry's `verbs` are still two lists, and they can
+// disagree: someone can add a verb to registry.json without writing its
+// catalogue entry (advertised but undispatchable, the original bug) or add a
+// catalogue entry without registering it (dispatchable but uncontracted).
+//
+// So check at STARTUP, not at call time. The original bug cost a full debug
+// cycle precisely because it surfaced per-call, far from the line that was
+// wrong. Note what is compared: SET equality, ignoring order, so reordering
+// either list is not a false alarm.
+const setEqual = (a, b) =>
+  a.length === b.length && [...a].sort().every((x, i) => x === [...b].sort()[i]);
+
+if (!setEqual(VERBS, REG.verbs)) {
+  process.stderr.write(
+    `[vault-mcp] FATAL: registry.json verbs and the TOOLS catalogue disagree.\n` +
+    `[vault-mcp]   registry.json verbs : ${[...REG.verbs].sort().join(", ")}\n` +
+    `[vault-mcp]   TOOLS catalogue     : ${[...VERBS].sort().join(", ")}\n` +
+    `[vault-mcp] A mismatch is the "advertised but undispatchable" bug this\n` +
+    `[vault-mcp] registry exists to prevent. Refusing to start.\n`,
+  );
+  process.exit(1);
+}
 
 // ---------------------------------------------------------------------------
 // adapter bridge
