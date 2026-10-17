@@ -1,7 +1,7 @@
 ---
-aliases: ['memory module purpose', 'vault charter', 'why the vault exists', 'self learning memory']
+aliases: []
 basis: user-stated
-description: 'The Obsidian memory module is the long-term memory for AI agents like OpenCode — agents that have tool access and can act on the user''s device. It is '
+description: 'The Obsidian memory module is the long-term memory for AI agents like OpenCode — agents that have tool access and can act on the user''''s device. It is '
 name: What the Obsidian memory module is for (2026-10-17-105734)
 scope: vault
 status: active
@@ -32,3 +32,5 @@ Success condition: the agent completes a complex task correctly with no supervis
 - [ ] Reviewed by user
 - [ ] Promoted to a permanent note
 - [ ] Archived (not worth keeping)
+
+Handed off to the permanent note [[Obsidian memory module]] — user-stated content does not belong in inbox.
