@@ -93,6 +93,7 @@ $result   = $null
 $ok       = $true
 $errMsg   = ''
 $errType  = ''
+$partial  = $false   # the write LANDED on disk but its git commit did not
 
 try {
     $a = Read-Request
@@ -186,8 +187,24 @@ try {
                     -Scope        (Get-ArgString $a 'scope') `
                     -Verified     (Get-ArgString $a 'verified') `
                     -SupersededBy (Get-ArgString $a 'supersededBy') `
+                    -ProbeKind    (Get-ArgString $a 'probeKind') `
+                    -ProbeTarget  (Get-ArgString $a 'probeTarget') `
+                    -ProbePattern (Get-ArgString $a 'probePattern') `
+                    -ProbeSuite   (Get-ArgString $a 'probeSuite') `
                     -Author       (Get-ArgString $a 'author' 'harness')
-            $result = @{ created = $r.Path; commit = $r.Commit }
+
+            # Save-VaultCommit already wrote the file before any git failure, so
+            # a failed commit is PARTIAL, not a refusal. Propagate that state to
+            # the envelope instead of swallowing it into a bare success.
+            if (-not $r.Committed) {
+                $partial  = $true
+                $ok       = $false   # a note with no commit behind it is NOT a clean success
+                $errMsg   = "note written to '$($r.Path)' but its git commit did NOT complete" +
+                            $(if ($r.Reason) { ": $($r.Reason)" } else { '' })
+                $errType  = 'PartialWrite'
+                $warnings = @($warnings) + @("file is on disk at $($r.Path) with no commit behind it")
+            }
+            $result = @{ path = $r.Path; created = $r.Path; commit = $r.Commit; committed = $r.Committed }
         }
 
         'append' {
@@ -214,6 +231,20 @@ try {
             if ($set.Count) { $splat.Set = $set }
 
             $r = Update-VaultNote @splat
+
+            # Same partial-write rule as create: the file is already rewritten,
+            # so a failed commit is PARTIAL -- never folded into a clean success.
+            if ($r.Partial) {
+                $partial  = $true
+                $ok       = $false   # rewritten on disk, no commit behind it
+                $errMsg   = "note updated on disk at '$($r.Path)' but its git commit did NOT complete" +
+                            $(if ($r.Reason) { ": $($r.Reason)" } else { '' })
+                $errType  = 'PartialWrite'
+                $warnings = @($warnings) + @("file is on disk at $($r.Path) with no commit behind it")
+            }
+            elseif (-not $r.Committed) {
+                $warnings = @($warnings) + @("update to $($r.Path) is on disk but was not committed: $($r.Reason)")
+            }
             $result = @{ path = $r.Path; action = $r.Action; commit = $r.Commit; set = @($r.Set) }
         }
 
@@ -246,8 +277,41 @@ try {
             $result = @{ count = $rows.Count; items = $rows }
         }
 
+        'verify' {
+            # THE WITNESS. The caller names a note and NOTHING else -- no
+            # outcome, no expected string, no pass/fail. Claude's test:
+            # replace the caller with a rock; if the result still holds, it is
+            # a witness. Every argument that could state an outcome is
+            # deliberately absent from this signature.
+            $p = Get-ArgString $a 'path'
+            if ([string]::IsNullOrWhiteSpace($p)) { throw 'verify: `path` is required.' }
+            $rec = Invoke-VaultVerify -RelativePath $p
+
+            # Read-only with respect to the note: verify appends to the
+            # evidence log under .system/ and touches nothing else.
+            $result = @{
+                path       = $rec.path
+                outcome    = $rec.outcome
+                basis      = $rec.basis
+                verified   = $rec.verified
+                probe      = $rec.probe
+                hash       = $rec.content_hash
+                # The axes, passed through. Without them the caller sees only
+                # the collapsed verdict and loses WHY -- which was the entire
+                # reason to keep them separate.
+                probe_ok   = $rec.probe_ok
+                drift      = $rec.drift
+                spec_drift = $rec.spec_drift
+                prior_hash = $rec.prior_hash
+                checks     = @($rec.checks)
+            }
+            if ($rec.PSObject.Properties['log_error']) {
+                $warnings = @($warnings) + @("evidence log append failed: $($rec.log_error)")
+            }
+        }
+
         default {
-            throw "Unknown verb '$Verb'. Allowed: core, recall, read, create, append, propose, stale"
+            throw "Unknown verb '$Verb'. Allowed: core, recall, read, create, append, propose, stale, verify"
         }
     }
 }
@@ -259,6 +323,18 @@ catch {
 
 $payload = @{ ok = $ok; verb = $Verb }
 if ($ok) { $payload.result = $result }
+elseif ($partial) {
+    # PARTIAL is its own state, deliberately not folded into the two-shape
+    # ok/error envelope. The note IS on disk at the reported path -- so a bare
+    # "REFUSED" here would be a lie (the thing the demo found). But it is also
+    # not a clean success, because there is no commit behind it. Reporting
+    # ok=false keeps callers from treating it as committed while naming the
+    # on-disk path and the git reason so the state is recoverable.
+    $payload.error     = $errMsg
+    $payload.errorType = 'PartialWrite'
+    $payload.partial   = $true
+    $payload.path      = $result.path
+}
 else     { $payload.error = $errMsg; $payload.errorType = $errType }
 if ($warnings.Count) { $payload.warnings = $warnings }
 

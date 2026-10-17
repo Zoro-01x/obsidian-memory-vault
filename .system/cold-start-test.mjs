@@ -41,7 +41,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const FOREIGN_CWD = "C:/Users/Home";
 const CONFIG = "C:/Users/Home/.config/opencode/opencode.jsonc";
 const TIMEOUT_MS = 30_000;
-const EXPECTED = ["core", "recall", "read", "create", "append", "propose", "stale"];
+const EXPECTED = ["core", "recall", "read", "create", "append", "propose", "stale", "verify"];
 
 const results = [];
 function check(name, pass, detail = "") {
@@ -234,7 +234,7 @@ try {
   const names = (list?.result?.tools ?? []).map((t) => t.name).sort();
   check("tools/list answered", !!list, `${names.length} tools`);
   check(
-    "all 7 verbs exposed on a cold start",
+    "all 8 verbs exposed on a cold start",
     JSON.stringify(names) === JSON.stringify([...EXPECTED].sort()),
     names.join(", ")
   );

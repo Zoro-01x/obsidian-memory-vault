@@ -101,9 +101,9 @@ check(
 );
 
 const tools = replies.get(2)?.result?.tools ?? [];
-const expected = ["core", "recall", "read", "create", "append", "propose", "stale"];
+const expected = ["core", "recall", "read", "create", "append", "propose", "stale", "verify"];
 check(
-  "tools/list exposes exactly the 7 verbs",
+  "tools/list exposes exactly the 8 verbs",
   JSON.stringify([...tools].map((t) => t.name).sort()) === JSON.stringify([...expected].sort()),
   tools.map((t) => t.name).join(", "),
 );

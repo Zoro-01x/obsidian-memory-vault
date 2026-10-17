@@ -163,11 +163,18 @@ try {
             T "field '$bad' is NOT mutable" ($_.Exception.Message -match 'not mutable') ($_.Exception.Message -split "`n")[0]
         }
     }
+    # `verified` left the -Set whitelist on 2026-10-17. Two independent
+    # consultations converged on it: a model that can re-stamp `verified` on a
+    # note it already wrote is a model that certifies its own homework, and
+    # git history keeps the unverified original while the note still READS as
+    # verified. Re-verification is now the `verify` verb's job: it executes a
+    # probe and appends to an evidence log under .system/ that no write verb
+    # can reach.
     try {
         Update-VaultNote -RelativePath $target -Set @{ verified = 'someday' } -Author 'test' | Out-Null
-        T 'verified set to garbage is REFUSED' $false 'accepted'
+        T 'verified is NOT mutable through set' $false 'it was accepted'
     } catch {
-        T 'verified set to garbage is REFUSED' ($_.Exception.Message -match 'YYYY-MM-DD') ($_.Exception.Message -split "`n")[0]
+        T 'verified is NOT mutable through set' ($_.Exception.Message -match 'not mutable') ($_.Exception.Message -split "`n")[0]
     }
     try {
         Update-VaultNote -RelativePath $target -Set @{ status = 'banana' } -Author 'test' | Out-Null

@@ -24,7 +24,6 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
 const ADAPTER = fileURLToPath(new URL("./vault-adapter.ps1", import.meta.url));
-const VERBS = ["core", "recall", "read", "create", "append", "propose", "stale"];
 const SPAWN_TIMEOUT_MS = 45_000;
 
 const log = (msg) => { try { process.stderr.write(`[vault-mcp] ${msg}\n`); } catch {} };
@@ -104,6 +103,15 @@ const TOOLS = [
         aliases: { type: "array", items: { type: "string" }, description: "Alternate names, so retrieval finds it under other vocabularies." },
         verified: { type: "string", description: "YYYY-MM-DD. REQUIRED when the note is about code/environment state." },
         supersededBy: { type: "string", description: "Title of the note that replaced this one (when status is superseded)." },
+        probeKind: {
+          type: "string", enum: ["path_exists", "file_hash", "symbol_present", "suite"],
+          description:
+            "Declares HOW a later session re-checks this note without asking a model. Frozen at create time and never mutable afterwards -- " +
+            "a probe the writer can rewrite after seeing its result proves nothing. Omit it and the note verifies as 'unverifiable'.",
+        },
+        probeTarget: { type: "string", description: "Vault-relative path the probe observes. Absolute paths and '..' traversal are refused." },
+        probePattern: { type: "string", description: "symbol_present only. Regex, min 6 chars -- a pattern matching everything proves nothing." },
+        probeSuite: { type: "string", enum: ["smoke", "cold-start", "native-stderr", "write-validation"], description: "suite only. A test by ID, never a command string." },
         author: { type: "string", description: "Git commit author (default 'harness'). Not written to frontmatter." },
       },
       additionalProperties: false,
@@ -124,13 +132,16 @@ const TOOLS = [
         replaceBody: { type: "string", description: "Replace the entire body. Only with a freshly-read note." },
         set: {
           type: "object",
-          description: "Frontmatter fields to change. Whitelist only: description, aliases, status, basis, scope, verified, superseded_by. `name` and `updated` cannot be set (updated is always today, so edits cannot be backdated).",
+          description:
+            "Frontmatter fields to change. Whitelist only: description, aliases, status, basis, scope, superseded_by. " +
+            "`name` and `updated` cannot be set (updated is always today, so edits cannot be backdated). " +
+            "`verified` was REMOVED from this whitelist: a model that can re-stamp verified on a note it already wrote is certifying its own " +
+            "homework. Re-verification is the `verify` verb's job -- it runs a probe and records evidence the write verbs cannot reach.",
           properties: {
             description: { type: "string" },
             status: { type: "string", enum: ["active", "superseded", "stale"] },
             basis: { type: "string", enum: BASIS },
             scope: { type: "string" },
-            verified: { type: "string", description: "YYYY-MM-DD recheck date." },
             aliases: { type: "array", items: { type: "string" } },
             supersededBy: { type: "string", description: "Title of the note that replaced this one." },
           },
@@ -176,7 +187,32 @@ const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: "verify",
+    description:
+      "THE WITNESS. Checks whether the world still satisfies the predicate a note declared, by executing the probe frozen in its frontmatter. " +
+      "Reads the note from disk -- never from anything you supply -- and the caller may name a note and NOTHING ELSE: no outcome, no expected " +
+      "string, no verdict. Returns `verified` | `failed` | `unverifiable` plus per-check evidence. Fail-closed: an exception, timeout or " +
+      "unrunnable probe is `failed`, never a pass. It answers 'was this stored with a valid declaration and does its evidence hold?', NOT " +
+      "'is this claim true?' -- a probe witnesses a predicate, not a proposition. Appends to an evidence log under .system/ that no write " +
+      "verb can reach, and never edits the note.",
+    inputSchema: {
+      type: "object",
+      required: ["path"],
+      properties: {
+        path: { type: "string", description: "Vault-relative path with .md extension. This is the ONLY input -- verify refuses anything that could state an outcome." },
+      },
+      additionalProperties: false,
+    },
+  },
 ];
+
+// Derived, NOT hand-maintained. There used to be a second literal here
+// ("core"... "stale") that had to be kept in sync with TOOLS by hand, and it
+// silently drifted: when `verify` was added to TOOLS it was missed here, so
+// tools/list advertised a tool that every call rejected with "has no adapter
+// verb". One list, derived from the catalogue, cannot drift.
+const VERBS = TOOLS.map((t) => t.name);
 
 // ---------------------------------------------------------------------------
 // adapter bridge
