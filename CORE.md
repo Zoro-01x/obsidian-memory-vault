@@ -5,7 +5,7 @@ description: Always-loaded memory index for every session; seven vault tools. Ha
 name: CORE
 scope: vault
 status: active
-updated: '2026-10-15'
+updated: '2026-10-17'
 verified: '2026-10-14'
 ---
 
@@ -113,3 +113,10 @@ Dropped: `type` (redundant with the folder), `created` (git has it),
   path ? see [[Obsidian CDP access]] for why the CDP graph path was removed.
 - **Backup:** none off-disk. Local git on the same drive is not a backup.
   Known gap.
+
+## Charter
+
+This module is the agent's long-term memory so it can **learn, unlearn, and
+update** and handle complex tasks **without the user's constant attention** —
+a memory close to a human being: self-learning, understanding, applying. Full
+framing and the feature-request test in [[Obsidian memory module]].
