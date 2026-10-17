@@ -55,3 +55,61 @@ next one before a dispatcher does.
 ## Related
 
 - [[Vault verify verb]] -- where the bug surfaced.
+
+---
+
+## RESOLVED 2026-10-17 (commit `aa1b808`)
+
+The class, not just the instance, is now fixed. **`.system/registry.json`** is the
+single source of truth for 14 closed vocabularies; both `vault-lib.ps1` and
+`vault-mcp.mjs` derive from it.
+
+**Inventory found six MORE duplicated vocabularies, and one had already
+drifted:** `WriteFolders` had four entries (incl. `inbox`) while the MCP
+`create` enum had three. That one is *deliberate* -- `propose` calls
+`New-VaultNote -Folder 'inbox'`, and exposing inbox on the MCP create enum
+would let an agent bypass the inbox review queue. But nothing said so, so a
+deliberate design was indistinguishable from a bug. It is now two **named**
+lists (`writeFolders` / `createFolders`) with the reason written into the file.
+
+> **The generalisation worth keeping:** the value of a registry is not only
+> catching drift. It is **making a deliberate difference explainable**. Before,
+> you had to ask a human whether a divergence was intended. Now the answer is
+> in the file.
+
+**Four `[ValidateSet]` attributes were removed** from `New-VaultNote` /
+`Add-VaultInboxItem`. `ValidateSet` is evaluated at *parse* time and cannot
+read a variable (`IValidateSetValuesGenerator` is PowerShell 6+, not Windows
+PowerShell 5.1), so it was structurally incapable of deriving -- a third and
+fourth copy of the same vocabularies. Runtime guards reading the registry
+replace them, and the error message improves as a side effect: it now lists the
+allowed values.
+
+**The startup check.** `VERBS` is still derived from `TOOLS`, and the two are
+now compared against the registry by **set equality at startup**. A mismatch
+exits 1 printing both lists. The original bug cost a debug cycle because it
+surfaced *per call*, far from the line that was wrong; failing at startup puts
+the message next to the cause.
+
+**Fail closed.** A missing, malformed, keyless or empty-list registry refuses
+to load, on both the PowerShell and Node side. A *defaulted* registry would
+enforce the wrong vocabulary, which is worse than enforcing none. Consequence
+worth knowing: **`registry.json` is now a hard runtime dependency** -- a clone
+missing it gets a startup refusal, by design.
+
+### The part to defend hardest
+
+The guard suite (**`.system/registry-test.ps1`, 55/55**) pins every expectation
+as a **literal**, never read back from the registry. Claude's reasoning, and it
+is the same rock-test logic applied to `verify`, one level up:
+
+> "If the test builds its expected value from the manifest, it's tautological --
+> editing the manifest edits the test with it."
+
+So the suite has two kinds of check that fail differently on purpose:
+consistency checks (both sides compared -- pass for any well-formed registry)
+and **literal checks** (registry compared to a hard-coded list -- fail when
+someone adds a fifth probe kind). That second failure is the point: it forces a
+human to confirm an addition rather than letting it arrive silently.
+
+**Related:** [[Vault verify verb]] -- where the bug surfaced.
