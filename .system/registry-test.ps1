@@ -1,4 +1,4 @@
-# registry-test.ps1
+﻿# registry-test.ps1
 #
 # THE INVARIANT UNDER TEST:
 #     Every closed vocabulary the vault enforces exists in EXACTLY ONE place
@@ -380,7 +380,186 @@ $e = Test-CorruptMcp $shrunk
 T 'MCP refuses to start when verbs and TOOLS DISAGREE (the original bug)' `
     ($e -match 'FATAL' -and $e -match 'disagree') ($e.Substring(0, [Math]::Min(220, $e.Length)))
 
-Write-Output "=== 9: the live registry itself is well-formed ==="
+Write-Output "=== 9: BEHAVIOURAL MATRIX -- every entry point still REFUSES bad vocab ==="
+# Claude's catch, and the sharpest one in this whole change:
+#
+#   "ValidateSet was enforced by the engine on every call path, and a runtime
+#    guard only runs if someone remembered to call it. A parameter that lost
+#    its ValidateSet and whose function forgot the guard now accepts anything,
+#    and the vocabulary tests stay green."
+#
+# Sections 1-9 prove the VOCABULARIES are right. They say nothing about whether
+# each entry point is still GUARDED -- a function can drop its ValidateSet,
+# forget to add a guard, and accept garbage while every vocabulary assertion
+# passes. So this matrix walks each entry point that accepts each vocabulary
+# and asserts refusal with the "Allowed:" wording.
+#
+# The CONTROL at the end matters as much as the matrix: without it this section
+# would also pass if a verb had become broken and refused everything.
+$mxRoot = Join-Path $env:TEMP ('regmatrix-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+New-Item -ItemType Directory -Path $mxRoot -Force | Out-Null
+foreach ($d in @('inbox', 'entities', 'decisions', 'lessons')) {
+    New-Item -ItemType Directory -Path (Join-Path $mxRoot $d) -Force | Out-Null
+}
+[System.IO.File]::WriteAllText((Join-Path $mxRoot '.vault-test-root'), "matrix`n",
+    (New-Object System.Text.UTF8Encoding($false)))
+[System.IO.File]::WriteAllText((Join-Path $mxRoot 'CORE.md'), "---`nname: CORE`n---`n`n# CORE`n`nScratch.`n",
+    (New-Object System.Text.UTF8Encoding($false)))
+& git.exe -C $mxRoot init -q 2>$null | Out-Null
+& git.exe -C $mxRoot config user.name  'matrix-test' 2>$null | Out-Null
+& git.exe -C $mxRoot config user.email 'matrix@example.invalid' 2>$null | Out-Null
+& git.exe -C $mxRoot config core.autocrlf false 2>$null | Out-Null
+
+function Invoke-AdapterArgs([string]$Root, [string]$Verb, $Obj) {
+    $json = ''
+    if ($null -ne $Obj) { $json = ($Obj | ConvertTo-Json -Depth 8 -Compress) }
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = 'powershell.exe'
+    $psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $adapter + '" -Verb ' + $Verb
+    $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true; $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
+    $psi.EnvironmentVariables['OBSIDIAN_VAULT_ROOT'] = $Root
+    $p = [System.Diagnostics.Process]::Start($psi)
+    if ($json) { $p.StandardInput.Write($json) }
+    $p.StandardInput.Close()
+    $out = $p.StandardOutput.ReadToEnd()
+    $null = $p.WaitForExit(180000)
+    $parsed = $null
+    try { $parsed = $out.Trim() | ConvertFrom-Json } catch { }
+    return [pscustomobject]@{
+        Ok    = if ($parsed) { [bool]$parsed.ok } else { $false }
+        Error = if ($parsed -and $parsed.PSObject.Properties['error']) { [string]$parsed.error } else { '' }
+    }
+}
+
+# The append cases need their target notes to EXIST. Without them every
+# append is refused with "No such note", and the test passes for the wrong
+# reason -- which is exactly what happened on the first run: the error
+# "No such note: 'entities\Mx Status.md'" contains the substring "Status",
+# so a loose `status` regex matched a FILENAME and reported a guard that had
+# never been reached. Hence the target notes, and the tightened wording
+# ("invalid status", not "status").
+foreach ($mn in @('Mx Status', 'Mx Basis')) {
+    $mk = Invoke-AdapterArgs -Root $mxRoot -Verb 'create' -Obj @{
+        folder='entities'; name=$mn; description='matrix target note'; body='body';
+        scope='matrix'; basis='observed'; status='active'; verified='2026-10-17'
+    }
+    if (-not $mk.Ok) { Write-Output ("WARN: could not create matrix target '$mn': " + $mk.Error) }
+}
+
+# (entry point, argument shape, bad value, vocabulary word expected in the error)
+$matrix = @(
+    @{ n='create + status';      verb='create'; a=@{ folder='entities'; name='Mx Status'; description='mx'; body='mx'; scope='mx' }; bad='status';      word='status' },
+    @{ n='create + basis';       verb='create'; a=@{ folder='entities'; name='Mx Basis';  description='mx'; body='mx'; scope='mx' }; bad='basis';       word='basis' },
+    @{ n='create + probeKind';   verb='create'; a=@{ folder='entities'; name='Mx Probe';  description='mx'; body='mx'; scope='mx' }; bad='probeKind';   word='probe_kind' },
+    @{ n='create + probeSuite';  verb='create'; a=@{ folder='entities'; name='Mx Suite';  description='mx'; body='mx'; scope='mx'; probeKind='suite' }; bad='probeSuite'; word='probe_suite' },
+    @{ n='create + folder';      verb='create'; a=@{ name='Mx Folder'; description='mx'; body='mx'; scope='mx' }; bad='folder'; word='not an allowed write target' },
+    @{ n='propose + basis';      verb='propose'; a=@{ title='Mx Propose'; claim='mx'; scope='mx' }; bad='basis'; word='basis' },
+    @{ n='append set + status';  verb='append'; a=@{ path='entities\Mx Status.md'; text='x'; set=@{} }; bad='set.status'; word='invalid status' },
+    @{ n='append set + basis';   verb='append'; a=@{ path='entities\Mx Basis.md';  text='x'; set=@{} }; bad='set.basis';  word='invalid basis' },
+    @{ n='append set + verified';verb='append'; a=@{ path='entities\Mx Status.md'; text='x'; set=@{} }; bad='set.verified'; word='not mutable' },
+    @{ n='append set + probe_kind'; verb='append'; a=@{ path='entities\Mx Status.md'; text='x'; set=@{} }; bad='set.probe_kind'; word='not mutable' }
+)
+
+foreach ($case in $matrix) {
+    # Clone the argument template so each case starts clean.
+    $a = @{}
+    foreach ($k in $case.a.Keys) { $a[$k] = $case.a[$k] }
+    # Apply the bad value to the (possibly nested) key path.
+    $parts = $case.bad -split '\.'
+    if ($parts.Count -eq 1) { $a[$parts[0]] = 'zz_not_a_real_value' }
+    else {
+        if (-not $a.ContainsKey($parts[0])) { $a[$parts[0]] = @{} }
+        $a[$parts[0]][$parts[1]] = 'zz_not_a_real_value'
+    }
+    $r = Invoke-AdapterArgs -Root $mxRoot -Verb $case.verb -Obj $a
+    T ("refuses: " + $case.n) ((-not $r.Ok) -and ($r.Error -match [regex]::Escape($case.word))) $r.Error
+}
+
+# THE CONTROL. Without it, every assertion above would also pass if the verbs
+# had become broken and started refusing everything -- a check that cannot fail
+# for the opposite reason is still a check that cannot fail.
+$c = Invoke-AdapterArgs -Root $mxRoot -Verb 'create' -Obj @{
+    folder='entities'; name='Mx Control'; description='matrix control'; body='body';
+    scope='matrix'; basis='observed'; status='active'; verified='2026-10-17'
+}
+T 'CONTROL: a VALID create is still accepted' ($c.Ok) $c.Error
+$c = Invoke-AdapterArgs -Root $mxRoot -Verb 'propose' -Obj @{
+    title='Mx Propose Control'; claim='matrix control claim'; scope='matrix'; basis='external-model'
+}
+T 'CONTROL: a VALID propose is still accepted' ($c.Ok) $c.Error
+$c = Invoke-AdapterArgs -Root $mxRoot -Verb 'append' -Obj @{
+    path='entities\Mx Control.md'; text='appended'; set=@{ status='stale' }
+}
+T 'CONTROL: a VALID set(status) is still accepted' ($c.Ok) $c.Error
+
+Write-Output "=== 10: the registry is unreachable by every write verb ==="
+# An agent that could edit the registry could WIDEN the wall -- add its own
+# folder to writeFolders, or its own key to mutableKeys. Being under .system
+# and in BlockedFolders should cover it; this asserts it rather than trusting
+# the reasoning.
+$before = [System.IO.File]::ReadAllText($regPath)
+foreach ($verb in @('create', 'append')) {
+    $a = @{ path = '.system/registry.json'; text = '{"verbs":["core"]}'; replaceBody = '{"verbs":["core"]}' }
+    if ($verb -eq 'create') { $a = @{ folder='.system'; name='registry'; description='x'; body='x'; scope='x' } }
+    $r = Invoke-AdapterArgs -Root $mxRoot -Verb $verb -Obj $a
+    T "$verb cannot reach .system/registry.json" ((-not $r.Ok) -and ($r.Error -match 'not an allowed write target|Blocked|\.system')) $r.Error
+}
+# `propose` takes a TITLE, not a path -- it has no path argument to poison, so
+# "cannot reach .system" is not the right assertion for it. The right one is
+# that its destination is ALWAYS inbox: whatever an agent passes as the title,
+# the note lands in the review queue and nowhere else.
+$pr = Invoke-AdapterArgs -Root $mxRoot -Verb 'propose' -Obj @{
+    title='..\.system\registry'; claim='can propose be steered out of inbox?'; scope='matrix'
+}
+# Re-read the scratch vault to learn where the note actually landed.
+$inboxCount = @(Get-ChildItem (Join-Path $mxRoot 'inbox') -Filter '*.md' -File -ErrorAction SilentlyContinue).Count
+$sysCount   = @(Get-ChildItem (Join-Path $mxRoot '.system') -Filter '*.md' -File -ErrorAction SilentlyContinue).Count
+T 'propose lands only in inbox/, never in .system/' ($inboxCount -ge 1 -and $sysCount -eq 0) "inbox=$inboxCount system=$sysCount"
+$after = [System.IO.File]::ReadAllText($regPath)
+T 'the live registry is byte-identical after those attempts' ($before -eq $after) 'unchanged'
+
+Write-Output "=== 11: registry.json has no BOM (PS 5.1 Set-Content -Encoding UTF8 writes one) ==="
+# Node's JSON.parse THROWS on a BOM, so the MCP server would refuse to start.
+# It works today only because the file was written without one -- the first
+# person to re-save it from Windows PowerShell 5.1 breaks the server with a
+# message about JSON parsing that never mentions the real cause.
+$regBytes = [System.IO.File]::ReadAllBytes($regPath)
+$hasBom = ($regBytes.Length -ge 3 -and $regBytes[0] -eq 0xEF -and $regBytes[1] -eq 0xBB -and $regBytes[2] -eq 0xBF)
+T 'registry.json starts without a UTF-8 BOM' (-not $hasBom) ("first3=" + $regBytes[0] + "," + $regBytes[1] + "," + $regBytes[2])
+
+Write-Output "=== 12: registry.json is tracked and NOT gitignored ==="
+# A clone that cannot see the registry gets a startup refusal. That refusal is
+# correct, but it must not happen for the boring reason that an ignore rule
+# swallowed the file while every test passed on the author's own machine.
+$ign = & git.exe -C 'C:\Users\Home\Documents\ObsidianVault' check-ignore -v '.system/registry.json' 2>&1 | Out-String
+T 'registry.json is not gitignored' ([string]::IsNullOrWhiteSpace($ign.Trim())) $ign.Trim()
+$tracked = & git.exe -C 'C:\Users\Home\Documents\ObsidianVault' ls-files '.system/registry.json' 2>&1 | Out-String
+T 'registry.json is tracked by git' ($tracked.Trim() -eq '.system/registry.json') $tracked.Trim()
+
+Write-Output "=== 13: the migration map emits only registry basis values ==="
+# Claude flagged $confidenceToBasis as a provenance risk: a bulk migration
+# could convert a self-reported confidence into a claim that someone OBSERVED
+# it. Checked rather than assumed -- the map is faithful, not laundering:
+#   'observed' -> 'observed'   the old field meant "someone observed this"
+#   'inferred' -> 'inferred'
+#   'stated'   -> 'user-stated'
+#   anything else -> 'inferred'  the WEAKEST honest basis, never a promotion
+# and a source-field override sends model consults to external-model.
+$mig = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot 'migrate-schema.ps1'))
+foreach ($v in @('observed', 'inferred', 'user-stated', 'external-model')) {
+    T "migration can emit basis '$v' (it is in the registry)" ($EXPECT_BASIS -contains $v) (($EXPECT_BASIS) -join ',')
+}
+# The default for an unrecognised legacy value must be the weakest basis.
+$defaultLine = @($mig -split "`n" | Where-Object { $_ -match 'confidenceToBasis\.ContainsKey' })
+T 'migration falls back to the WEAKEST basis for unknown legacy values' `
+    (($defaultLine -join ' ') -match "'inferred'") (($defaultLine -join ' ').Trim())
+# And it must not stamp verification: `verified` comes only from a hand-written
+# date table, never from confidence.
+T 'migration never emits verified_by' ($mig -notmatch 'verified_by') 'absent'
+T 'migration sets verified only from an explicit date table' ($mig -match '\$verified\.ContainsKey') 'uses the $verified map'
+
+Write-Output "=== 14: the live registry itself is well-formed ==="
 try {
     $live = [System.IO.File]::ReadAllText($regPath) | ConvertFrom-Json
     T 'the live registry.json parses' $true
