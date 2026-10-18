@@ -240,12 +240,15 @@ function Resolve-VaultSafePath {
         }
     }
     if ($parts.Count -eq 1) {
-        # Root-level file: must be on the explicit allowlist.
-        if ($script:RootFiles -notcontains $top) {
+        # Root-level file: must be on the explicit allowlist. Case-sensitive,
+        # like every closed vocabulary here: on a case-insensitive filesystem
+        # 'CORE.MD' would resolve to the same file but commit a differently
+        # cased path, and git would then track two names for one note.
+        if ($script:RootFiles -cnotcontains $top) {
             throw "Root file '$top' is not a writable target. Writable root files: $($script:RootFiles -join ', ')."
         }
     }
-    elseif ($top -notin $AllowedFolders) {
+    elseif ($top -cnotin $AllowedFolders) {
         throw "Folder '$top' is not an allowed write target. Allowed: $($AllowedFolders -join ', ')"
     }
 
@@ -764,10 +767,20 @@ function Test-VaultData {
     foreach ($f in $script:RequiredFields) {
         if (-not $Data.ContainsKey($f)) { $problems += "missing field: $f" }
     }
-    if ($Data['status'] -and $Data['status'] -notin $script:ValidStatus) {
+    # Case-sensitive on purpose. PowerShell's -notin is CASE-INSENSITIVE, so
+    # the old form here accepted 'Active' and 'OBSERVED' and stored them
+    # verbatim -- a value every lowercase reader, and any JS === comparison,
+    # treats as a different string. The registry is lowercase and the
+    # vocabulary is closed, so wrong case is a wrong value.
+    #
+    # Presence is checked with ContainsKey and NOT with truthiness: an empty
+    # string is falsy, so `if ($Data['status'])` skipped the guard entirely
+    # and the note was written as `status: ~` -- YAML null -- which then read
+    # back as a status of neither active nor superseded.
+    if ($Data.ContainsKey('status') -and ([string]$Data['status']) -cnotin $script:ValidStatus) {
         $problems += "invalid status: '$($Data['status'])'"
     }
-    if ($Data['basis'] -and $Data['basis'] -notin $script:ValidBasis) {
+    if ($Data.ContainsKey('basis') -and ([string]$Data['basis']) -cnotin $script:ValidBasis) {
         $problems += "invalid basis: '$($Data['basis'])'"
     }
     if (-not $Data['description']) { $problems += 'empty description (retrieval hook)' }
@@ -795,14 +808,17 @@ function Test-VaultData {
     # cannot run is worse than none, because it reads as a guarantee.
     $pk = $Data['probe_kind']
     if ($pk) {
-        if ($pk -notin $script:ValidProbeKinds) {
+        # -cnotin / -ceq, same case discipline as status above: 'SUITE' used
+        # to match 'suite' case-insensitively, which meant a wrong-case probe
+        # kind silently ran the suite branch instead of being refused.
+        if ($pk -cnotin $script:ValidProbeKinds) {
             $problems += "invalid probe_kind: '$pk'. Allowed: $($script:ValidProbeKinds -join ', ')"
         }
-        if ($pk -eq 'suite') {
+        if ($pk -ceq 'suite') {
             if (-not $Data['probe_suite']) {
                 $problems += 'probe_kind=suite requires probe_suite'
             }
-            elseif ($Data['probe_suite'] -notin $script:AllowedProbeSuites) {
+            elseif ($Data['probe_suite'] -cnotin $script:AllowedProbeSuites) {
                 $problems += "probe_suite '$($Data['probe_suite'])' is not allowlisted. Allowed: $($script:AllowedProbeSuites -join ', ')"
             }
         }
@@ -826,7 +842,7 @@ function Test-VaultData {
                 $problems += 'probe_target must not traverse out of the vault (no .. segments)'
             }
         }
-        if ($pk -eq 'symbol_present') {
+        if ($pk -ceq 'symbol_present') {
             $pat = "$($Data['probe_pattern'])"
             if ([string]::IsNullOrWhiteSpace($pat)) {
                 $problems += 'probe_kind=symbol_present requires probe_pattern'
@@ -905,16 +921,23 @@ function New-VaultNote {
     # is written: the file write happens well after this point. They duplicate
     # Test-VaultData's checks on purpose (defense in depth), but both read the
     # same registry, so there is still one source of truth for the vocabulary.
-    if ($Status -and $Status -notin $script:ValidStatus) {
+    # Same case/empty discipline as Test-VaultData, for the same reason: -notin
+    # is case-insensitive and the old truthiness guard let an explicitly
+    # passed '' through both this check AND the schema check below, so a note
+    # could be written with `status: ~`. $Status/$Basis have defaults, so an
+    # empty value here always means the caller asked for one -- refuse it.
+    if ([string]::IsNullOrEmpty($Status) -or ($Status -cnotin $script:ValidStatus)) {
         throw "invalid status: '$Status'. Allowed: $($script:ValidStatus -join ', ')"
     }
-    if ($Basis -and $Basis -notin $script:ValidBasis) {
+    if ([string]::IsNullOrEmpty($Basis) -or ($Basis -cnotin $script:ValidBasis)) {
         throw "invalid basis: '$Basis'. Allowed: $($script:ValidBasis -join ', ')"
     }
-    if ($ProbeKind -and $ProbeKind -notin $script:ValidProbeKinds) {
+    # ProbeKind/ProbeSuite keep the -and: empty means "no probe declared",
+    # which is legal -- only a NON-empty value must match the vocabulary.
+    if ($ProbeKind -and $ProbeKind -cnotin $script:ValidProbeKinds) {
         throw "invalid probe_kind: '$ProbeKind'. Allowed: $($script:ValidProbeKinds -join ', ')"
     }
-    if ($ProbeSuite -and $ProbeSuite -notin $script:AllowedProbeSuites) {
+    if ($ProbeSuite -and $ProbeSuite -cnotin $script:AllowedProbeSuites) {
         throw "invalid probe_suite: '$ProbeSuite'. Allowed: $($script:AllowedProbeSuites -join ', ')"
     }
 
@@ -1175,7 +1198,15 @@ function Update-VaultNote {
     $mutable  = @($script:VaultRegistry.mutableKeys)
     $changed  = @()
     foreach ($k in @($Set.Keys)) {
-        if ($mutable -notcontains $k) {
+        # Case-sensitive, for the same reason as every vocabulary guard: with
+        # -notcontains, 'SUPERSEDED_BY' matched 'superseded_by', and because a
+        # hashtable only case-fold-merges keys that ALREADY exist, setting a
+        # field the note does not carry yet would have created a new key with
+        # the caller's casing -- an uppercase frontmatter field on disk.
+        if ($mutable -cnotcontains $k) {
+            if ($mutable -icontains $k) {
+                throw "Field '$k' has the wrong case. Mutable keys are lowercase: $($mutable -join ', ')"
+            }
             throw "Field '$k' is not mutable through update. Mutable: $($mutable -join ', '). " +
                   "To rename, create a new note and set superseded_by."
         }

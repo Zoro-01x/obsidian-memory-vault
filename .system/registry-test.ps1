@@ -493,6 +493,65 @@ $c = Invoke-AdapterArgs -Root $mxRoot -Verb 'append' -Obj @{
 }
 T 'CONTROL: a VALID set(status) is still accepted' ($c.Ok) $c.Error
 
+# --- 9b: CASE / WHITESPACE / EMPTY variants ---
+#
+# Found by a consultation review (Claude, Gap 1) and confirmed empirically
+# BEFORE the fix on 2026-10-17: 'Active', 'ACTIVE', 'OBSERVED', 'Observed'
+# and '' were all ACCEPTED and written to disk verbatim, while the padded
+# 'active ' was refused -- so the guards did not merely lack case-sensitivity,
+# they DISAGREED with each other. Two mechanisms, both now fixed in
+# vault-lib.ps1: PowerShell's -notin is case-insensitive, and the old
+# `if ($Data['status'] -and ...)` truthiness test skipped empty strings
+# (falsy), which wrote `status: ~`, i.e. YAML null.
+#
+# Policy (agreed with the same review): the vocabularies are closed and
+# lowercase, so wrong case, padding and empty are all REFUSED. Each assertion
+# pins both the guard name and the offending VALUE, so it cannot false-pass
+# on a different guard's message the way the "Mx Status" near-miss did.
+$variants = @(
+    @{ n='create status wrong-case Active';   verb='create'; a=@{ folder='entities'; name='Mx Vc1'; description='vc'; body='vc'; scope='vc'; basis='observed'; status='Active' };  word="invalid status: 'Active'" },
+    @{ n='create status wrong-case ACTIVE';   verb='create'; a=@{ folder='entities'; name='Mx Vc2'; description='vc'; body='vc'; scope='vc'; basis='observed'; status='ACTIVE' };  word="invalid status: 'ACTIVE'" },
+    @{ n='create status EMPTY';               verb='create'; a=@{ folder='entities'; name='Mx Vc3'; description='vc'; body='vc'; scope='vc'; basis='observed'; status='' };       word="invalid status: ''" },
+    @{ n='create status padded';              verb='create'; a=@{ folder='entities'; name='Mx Vc4'; description='vc'; body='vc'; scope='vc'; basis='observed'; status='active ' }; word="invalid status: 'active '" },
+    @{ n='create basis wrong-case OBSERVED';  verb='create'; a=@{ folder='entities'; name='Mx Vc5'; description='vc'; body='vc'; scope='vc'; basis='OBSERVED'; status='active' };  word="invalid basis: 'OBSERVED'" },
+    @{ n='create basis EMPTY';                verb='create'; a=@{ folder='entities'; name='Mx Vc6'; description='vc'; body='vc'; scope='vc'; basis='';         status='active' };  word="invalid basis: ''" },
+    # probeKind wrong-case, with a VALID suite and target alongside so the
+    # refusal can only be about the case -- 'SUITE' used to match 'suite'
+    # case-insensitively and silently ran the suite branch instead.
+    @{ n='create probeKind wrong-case SUITE'; verb='create'; a=@{ folder='entities'; name='Mx Vc7'; description='vc'; body='vc'; scope='vc'; basis='observed'; status='active'; probeKind='SUITE'; probeSuite='smoke'; probeTarget='CORE.md'; probePattern='Scratch' }; word="invalid probe_kind: 'SUITE'" },
+    # folder wrong-case: on a case-insensitive filesystem 'Entities' resolves
+    # to the same directory but git would track a differently cased path.
+    @{ n='create folder wrong-case Entities'; verb='create'; a=@{ name='Mx Vc8'; description='vc'; body='vc'; scope='vc'; folder='Entities' }; word='not an allowed write target' },
+    @{ n='propose basis wrong-case External-Model'; verb='propose'; a=@{ title='Mx Vc9'; claim='vc'; scope='vc'; basis='External-Model' }; word="invalid basis: 'External-Model'" },
+    @{ n='append set status wrong-case Superseded'; verb='append'; a=@{ path='entities\Mx Status.md'; text='x'; set=@{ status='Superseded' } }; word="invalid status: 'Superseded'" },
+    @{ n='append set status padded';          verb='append'; a=@{ path='entities\Mx Status.md'; text='x'; set=@{ status='stale ' } }; word="invalid status: 'stale '" },
+    @{ n='append set basis wrong-case Inferred';   verb='append'; a=@{ path='entities\Mx Basis.md';  text='x'; set=@{ basis='Inferred' } };  word="invalid basis: 'Inferred'" },
+    # set KEY wrong-case: -notcontains used to match 'STATUS' to 'status',
+    # and hashtable case-folding only merges keys that already exist, so
+    # setting a field the note does not carry yet would have written an
+    # UPPERCASE frontmatter key to disk.
+    @{ n='append set KEY wrong-case STATUS';  verb='append'; a=@{ path='entities\Mx Status.md'; text='x'; set=@{ STATUS='superseded' } }; word="wrong case" }
+)
+
+foreach ($v in $variants) {
+    $a = @{}
+    foreach ($k in $v.a.Keys) { $a[$k] = $v.a[$k] }
+    $r = Invoke-AdapterArgs -Root $mxRoot -Verb $v.verb -Obj $a
+    T ("refuses: " + $v.n) ((-not $r.Ok) -and ($r.Error -match [regex]::Escape($v.word))) $r.Error
+}
+
+# Controls for THIS section: every lowercase sibling of a refused variant
+# must still be accepted, or the refusals above could be pass-by-broken.
+$c = Invoke-AdapterArgs -Root $mxRoot -Verb 'create' -Obj @{
+    folder='entities'; name='Mx Vc Control'; description='vc control'; body='body';
+    scope='vc'; basis='inferred'; status='superseded'; verified='2026-10-17'
+}
+T 'CONTROL: lowercase create (inferred/superseded) is still accepted' ($c.Ok) $c.Error
+$c = Invoke-AdapterArgs -Root $mxRoot -Verb 'append' -Obj @{
+    path='entities\Mx Vc Control.md'; text='x'; set=@{ basis='observed' }
+}
+T 'CONTROL: lowercase set(basis) is still accepted' ($c.Ok) $c.Error
+
 Write-Output "=== 10: the registry is unreachable by every write verb ==="
 # An agent that could edit the registry could WIDEN the wall -- add its own
 # folder to writeFolders, or its own key to mutableKeys. Being under .system
