@@ -144,6 +144,33 @@ try {
     $after = @(Get-ChildItem (Join-Path $tmpRoot 'lessons') -Filter '*.md')
     T 'no file was written by the refused create' ($before.Count -eq $after.Count) "$($before.Count) -> $($after.Count)"
 
+    # The SAME code-shaped claim CAN be staged into inbox/. propose cannot pass
+    # a verified date at all, so requiring one there made every code-shaped
+    # external claim unstaggable -- which pushes the agent toward laundering it
+    # as `observed` instead. Found by adversarial-demo-test 2026-10-18; no
+    # suite had proposed a code-shaped claim before that demo. The control
+    # immediately below proves the exemption is staging-only: promotion still
+    # refuses the identical description.
+    $inboxBefore = @(Get-ChildItem (Join-Path $tmpRoot 'inbox') -Filter '*.md')
+    try {
+        New-VaultNote -Folder 'inbox' -Name 'ZZ staged code claim' `
+            -Description 'This command line path config install breaks in v2' `
+            -Body 'x' -Scope 'toolchain' -Basis 'external-model' -Author 'test' | Out-Null
+        T 'code-shaped claim CAN be staged into inbox (staging is unverified by construction)' $true
+    } catch {
+        T 'code-shaped claim CAN be staged into inbox (staging is unverified by construction)' $false $_.Exception.Message
+    }
+    $inboxAfter = @(Get-ChildItem (Join-Path $tmpRoot 'inbox') -Filter '*.md')
+    T 'the staged claim was written to inbox' ($inboxAfter.Count -eq ($inboxBefore.Count + 1)) "$($inboxBefore.Count) -> $($inboxAfter.Count)"
+    try {
+        New-VaultNote -Folder 'entities' -Name 'ZZ promoted code claim' `
+            -Description 'This command line path config install breaks in v2' `
+            -Body 'x' -Scope 'toolchain' -Basis 'observed' -Author 'test' | Out-Null
+        T 'control: the identical description is STILL REFUSED on promotion to entities' $false 'it was created'
+    } catch {
+        T 'control: the identical description is STILL REFUSED on promotion to entities' ($_.Exception.Message -match 'verified') ($_.Exception.Message -split "`n")[0]
+    }
+
     # Bad date format must be refused.
     try {
         New-VaultNote -Folder 'lessons' -Name 'ZZ bad date' -Description 'Some code path thing' `

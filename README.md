@@ -2,14 +2,18 @@
 
 A personal long-term memory layer for an AI coding agent.
 
-Plain markdown notes, versioned in git, exposed to the agent over MCP as seven
+Plain markdown notes, versioned in git, exposed to the agent over MCP as eight
 constrained verbs. No database, no embeddings, no server process.
 
 ## The one-sentence version
 
-**It is a memory layer where a claim cannot silently become truth** — every note
-carries how it is known (`basis`) and when it was last checked (`verified`), and
-writes are refused at the door if that provenance is missing or malformed.
+**It is a memory layer where every claim must declare how it is known** — each
+note carries its provenance (`basis`) and, for code/environment claims, when it
+was last checked (`verified`); writes are refused at the door if that
+provenance is missing or malformed. What this does *not* do: verify that the
+writer is being honest. A model can still declare `basis: observed` for
+something it never observed — the schema makes that declaration explicit and
+reviewable, not impossible.
 
 Obsidian stores notes. Git versions files. MCP exposes tools. Schema validation
 checks structure. This project exists to enforce one behaviour those tools do not
@@ -25,7 +29,7 @@ actually verifies it.**
   [Limitations](#limitations).
 - Not autonomous. Nothing drains, promotes or prunes without a person asking.
 
-## The seven verbs
+## The eight verbs
 
 | Verb | What it does |
 |------|--------------|
@@ -36,6 +40,7 @@ actually verifies it.**
 | `append` | Append to a note, or replace a body explicitly. `set` edits frontmatter through a whitelist |
 | `propose` | Stage an **unverified** claim into `inbox/` — for things you did not observe yourself |
 | `stale` | Read-only prune pass: old inbox items and unverified code facts |
+| `verify` | The witness: executes the probe frozen in the note's frontmatter against the world, appends to an evidence log the write verbs cannot reach. Never edits the note |
 
 Every verb runs as one fresh PowerShell process reading one JSON object from
 stdin and writing one JSON object to stdout. Deliberately not a long-lived
@@ -68,11 +73,20 @@ Validation happens **before** the file is written, against in-memory data:
 - a code-shaped note with no `verified` date → refused
 - `verified: recently` → refused (must be `YYYY-MM-DD`)
 - `status: banana` → refused (only `active` / `superseded` / `stale`)
-- `name`, `updated`, `created`, `type`, `author` → not mutable via `set`
+
+Vocabulary guards are **closed and case-sensitive**, verified per entry point:
+
+| Input | Result | Why |
+|-------|--------|-----|
+| `status: Active` (wrong case) | refused | `-notin` is case-insensitive in PowerShell; the guards use `-cnotin` so `Active` cannot enter the vocabulary alongside `active` |
+| `status: ''` (empty) | refused | An empty string is falsy, so a truthiness guard skips it; presence is checked with `ContainsKey` instead |
+| `set @{ STATUS = ... }` (wrong-case key) | refused | Hashtable key matching is case-insensitive; the whitelist uses `-cnotcontains` so a wrong-case key cannot create a new field with its own casing |
+| code-shaped claim into `inbox/` | **accepted** | Staging is unverified by construction — `propose` cannot pass a `verified` date, so refusing code-shaped claims at the door made the most valuable claims unstaggable and pushed the agent toward laundering them as `observed`. The rule bites at *promotion*: the identical description is still refused in `entities/`, `decisions/`, `lessons/` (both directions pinned in `write-validation-test.ps1`) |
 
 The `set` whitelist is what makes retiring a note possible at all — without it,
 `status: superseded` would be unreachable and every note would live forever as
-`active`.
+`active`. Immutable by the same whitelist: `name`, `updated`, `created`,
+`type`, `author`, `verified`, and every `probe_*` field.
 
 Writes are also path-guarded: `..`, absolute paths, `.obsidian`, `.git`,
 `.system` and unknown folders are rejected. A verb stages **only** the path it
@@ -88,7 +102,16 @@ Keyword search, honestly described:
    `IndexOf` scan over every note.
 3. Score, in order of weight: `name` +6, `aliases` +4, `description` +3,
    `scope` +2 per matched term, plus a bonus when several query terms match the
-   same note. Recency adds a small boost; `stale` and `superseded` subtract.
+   same note. Recency adds a small boost; `stale` and `superseded` subtract;
+   `external-model` subtracts a small amount so an unchecked rumour cannot tie
+   an observed+verified note on equal relevance. And when a superseded note and
+   its named successor are both in the result set, the successor is forced
+   above — a flat penalty cannot guarantee that, because the retired note's
+   *name* may match the query better. Found by `adversarial-demo-test.ps1`
+   (2026-10-18): before these two rules, an unchecked contradiction tied the
+   verified note at 31.5, and a superseded inbox item outranked its own
+   successor 32.5 → 31.5. The demo caught two real ranking defects on its
+   first run; the fixes are pinned by its assertions.
 
 **No embeddings, no vector store.** For a few hundred notes, grep plus the
 wikilink graph is enough, and frontmatter aliases cure most vocabulary-mismatch
@@ -98,10 +121,10 @@ should know that before you try it.
 
 ## Running it
 
-All three suites are safe. None writes to the real vault.
+All suites are safe. None writes to the real vault.
 
 ```bash
-# read-only end-to-end across all 7 verbs
+# read-only end-to-end across all 8 verbs
 node .system/smoke-test.mjs
 
 # the wrapper, spawned cold from a foreign working directory
@@ -109,12 +132,38 @@ node .system/cold-start-test.mjs
 
 # schema enforced before writes; -Set whitelist; a refusal stages nothing
 powershell -NoProfile -ExecutionPolicy Bypass -File .system/write-validation-test.ps1
+
+# git's LF->CRLF stderr warning must never turn a committed write into a REFUSED
+powershell -NoProfile -ExecutionPolicy Bypass -File .system/native-stderr-test.ps1
+
+# the verify verb: probes, canary controls, fail-closed, drift axes
+powershell -NoProfile -ExecutionPolicy Bypass -File .system/verify-test.ps1
+
+# registry.json: one source of truth, every entry point still refuses bad vocabularies
+powershell -NoProfile -ExecutionPolicy Bypass -File .system/registry-test.ps1
+
+# adversarial demo: seed -> retrieve -> refuse promotion -> promote -> contradict
+powershell -NoProfile -ExecutionPolicy Bypass -File .system/adversarial-demo-test.ps1
 ```
 
-Expected outcome for each: **all pass, zero fail.**
+Expected outcome for each: **all pass, zero fail.** Verified 2026-10-18.
+Treat that as a record of that day, not a standing claim — run the commands
+above.
 
-Dated evidence (run 2026-10-16): `17/17`, `8/8`, `33/33`. Treat those numbers as
-a record of that day, not a standing claim — run the commands above.
+### Pre-commit hook
+
+A `.githooks/pre-commit` hook (enabled via `git config core.hooksPath .githooks`)
+runs `registry-test.ps1` automatically — but only when a vocabulary-bearing
+file is staged (`.system/registry.json`, `vault-lib.ps1`, `vault-adapter.ps1`,
+`registry-test.ps1`, `vault-mcp.mjs`). Note commits stay fast; the suite runs
+exactly when a vocabulary or its guard changes, which is the only commit where
+"forgot to run it" can smuggle a broken guard through. It fails closed: if the
+suite cannot run, the commit is blocked.
+
+The honest ceiling: this removes the forgotten-run failure. It is **not**
+independent review — the human is still the attestor for vocabulary changes.
+A fresh clone does not get the hook automatically (`.git/hooks` is not
+tracked); re-enable it with the config line above.
 
 The write-validation suite builds a scratch repo under `%TEMP%` with a
 `.vault-test-root` sentinel and refuses to run a single assertion unless the
@@ -188,17 +237,20 @@ Stated plainly, because hiding them would be the disqualifying part:
 1. **Windows-only.** PowerShell adapter, hard-coded ripgrep path,
    `%TEMP%`/sentinel isolation, and the baseline accepts known Windows-path
    findings. Someone on macOS or Linux cannot run this as-is.
-2. **A real defect, found by the demo.** `vault-adapter.ps1` sets
-   `$ErrorActionPreference = 'Stop'`, and under that setting a native command's
-   **stderr becomes a terminating error**. Git warns on stderr about LF→CRLF when
-   `core.autocrlf` is at its Windows default. So on a default-configured clone,
-   `create`/`append` can report `REFUSED: warning: ...` **after the note has
-   already been written and staged** — the write happened, the caller is told it
-   was refused, and no commit exists.
-   This repo sets `core.autocrlf = false`, so it does not trigger here; a fresh
-   clone with defaults will hit it. It also means the suite's guarantee
-   *"a refusal stages and commits nothing"* holds for validation refusals
-   (thrown before the write) but **not** for failures after it.
+2. **The LF→CRLF defect is fixed, and the fix changed the story.**
+   `vault-adapter.ps1` used to set `$ErrorActionPreference = 'Stop'`, under
+   which a native command's **stderr becomes a terminating error**. Git warns
+   on stderr about LF→CRLF, so `create`/`append` could report
+   `REFUSED: warning: ...` **after the note had already been written and
+   staged**. Fixed 2026-10-17 at one shared boundary (`Invoke-VaultNative`):
+   stderr is captured as data, success is decided by `$LASTEXITCODE` alone.
+   `native-stderr-test.ps1` is the regression suite.
+   Correction to an earlier claim in this README: this did **not** reproduce
+   in a fresh clone — `.gitattributes` pins `*.md`/`*.ps1`/`*.mjs`/`*.json`
+   to `eol=lf`, which suppresses the warning at checkout. The old text said
+   "a fresh clone with defaults will hit it"; that was wrong, and the
+   wrongness was found by attempting the clone rather than reasoning about
+   it.
 3. **Scale untested.** The vault holds a handful of notes. Recall ranking,
    dedupe and the staleness rule have never been exercised at a size where they
    could fail.
@@ -208,11 +260,23 @@ Stated plainly, because hiding them would be the disqualifying part:
 6. **External models are not wired in as sources.** Gemini/Claude are consulted
    manually and judged by the writer; nothing writes to memory on their behalf.
 7. **The Obsidian viewer is not running.** It is an optional human-facing window
-   over the same files. The seven verbs do not need it.
-8. **Not yet shown to improve work.** The suites prove the plumbing; the demo
+   over the same files. The eight verbs do not need it.
+8. **Model dependence — write-side form is enforced; read-side honesty is not.**
+   The adapter refuses malformed writes no matter which model calls it, and no
+   suite gates on model behaviour. What *does* depend on the operating model is
+   what the model chooses to call and what it claims afterwards: a weak model
+   can still declare `basis: observed` for something it never observed, skip
+   `verify`, or report success on a call that never executed (NVIDIA
+   DeepSeek-V4.1 via the NIM endpoint has been observed emitting tool-call
+   markup as plain text). Tested operators, 2026-10-18, all seven suites green:
+   **OpenCode-hosted models — full write/verify loop. NVIDIA NIM / DeepSeek via
+   NIM — read-only recommended, not attested for write/verify.** These are
+   dated test records, not permanent support claims; re-run the suites against
+   a model before moving its tier.
+9. **Not yet shown to improve work.** The suites prove the plumbing; the demo
    proves information availability. What has *not* been measured is whether an
    agent with this memory produces better work than one without.
-9. **Private repository.** No outsider has cloned and reproduced it yet.
+10. **Private repository.** No outsider has cloned and reproduced it yet.
 
 ## Non-goals
 
@@ -221,5 +285,5 @@ than a human viewer are out of scope. If you want those, this is the wrong tool.
 
 ---
 
-*Verified 2026-10-16. Commands and expected outcomes above are current as of
-that date; numbers are a dated record, not a standing claim.*
+*Verified 2026-10-18. Commands and expected outcomes above are current as of
+that date; dated counts are a record of that day, not a standing claim.*

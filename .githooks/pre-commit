@@ -1,0 +1,26 @@
+#!/bin/sh
+# Pre-commit: run registry-test.ps1 when a vocabulary-bearing file changes.
+#
+# Why scoped, not on every commit: the suite spawns ~100 adapter processes and
+# takes tens of seconds. Note commits (the harness writing memory) do not touch
+# the vocabulary, so they stay fast; this fires exactly when the vocabularies,
+# their guards, or their tests change -- the only commits where "forgot to run
+# the suite" can smuggle a broken guard through.
+#
+# Honest ceiling (stated in the README too): this removes the "forgot to run
+# it" failure mode. It is NOT independent review. You are still the attestor
+# for vocabulary changes.
+#
+# Fails closed: if the suite cannot run at all, that is a failure, not a pass.
+
+if git diff --cached --name-only | grep -qE '^\.system/(registry\.json|vault-lib\.ps1|vault-adapter\.ps1|registry-test\.ps1|vault-mcp\.mjs)$'; then
+    echo "[pre-commit] vocabulary-bearing file staged -- running registry-test.ps1"
+    if ! powershell.exe -NoProfile -ExecutionPolicy Bypass -File .system/registry-test.ps1 >"$TEMP/registry-test-precommit.log" 2>&1; then
+        echo "[pre-commit] FAILED. Last lines:"
+        tail -n 20 "$TEMP/registry-test-precommit.log"
+        echo "[pre-commit] full log: $TEMP/registry-test-precommit.log"
+        exit 1
+    fi
+    echo "[pre-commit] registry-test.ps1 passed"
+fi
+exit 0

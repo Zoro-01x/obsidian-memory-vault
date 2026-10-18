@@ -655,17 +655,41 @@ function Find-VaultNote {
         }
         # Stale/superseded notes should surface below active ones, not vanish.
         if ($fm.status -eq 'stale' -or $fm.status -eq 'superseded') { $score -= 2 }
+        # On equal relevance, provenance decides: someone else's account is
+        # not your own observation. Small on purpose -- it only breaks
+        # near-ties. Without it an unchecked external-model claim TIED an
+        # observed+verified note at 31.5 (adversarial-demo-test 2026-10-18),
+        # so a cold session had a coin-flip's chance of reading the rumour
+        # first. A clearly better match still wins regardless of basis.
+        if ($fm.basis -eq 'external-model') { $score -= 1 }
         $folder = Split-Path -Parent $rel
         [pscustomobject]@{
-            Path        = $rel
-            Name        = if ($fm.name) { $fm.name } else { [System.IO.Path]::GetFileNameWithoutExtension($rel) }
-            Folder      = if ($folder) { $folder } else { '(root)' }
-            Basis       = $fm.basis
-            Scope       = $fm.scope
-            Status      = $fm.status
-            Verified    = $fm.verified
-            Description = $fm.description
-            Score       = $score
+            Path         = $rel
+            Name         = if ($fm.name) { $fm.name } else { [System.IO.Path]::GetFileNameWithoutExtension($rel) }
+            Folder       = if ($folder) { $folder } else { '(root)' }
+            Basis        = $fm.basis
+            Scope        = $fm.scope
+            Status       = $fm.status
+            Verified     = $fm.verified
+            SupersededBy = $fm.superseded_by
+            Description  = $fm.description
+            Score        = $score
+        }
+    }
+    $scored = @($scored)
+    # Supersession is a POINTER, and retrieval honours it: when a superseded
+    # note and its named successor are BOTH in the result set, the successor
+    # ranks above. The flat -2 above cannot guarantee that -- a retired note's
+    # NAME may match the query better than its successor's (proven by
+    # adversarial-demo-test 2026-10-18: superseded item 32.5 vs successor
+    # 31.5). The superseded note stays in the results -- demoted, not
+    # deleted; memory that forgets defeats the point.
+    foreach ($s in $scored) {
+        if ($s.Status -eq 'superseded' -and $s.SupersededBy) {
+            $succ = $scored | Where-Object { $_.Name -eq $s.SupersededBy } | Select-Object -First 1
+            if ($succ -and $s.Score -ge $succ.Score) {
+                $s.Score = [Math]::Round($succ.Score - 0.5, 2)
+            }
         }
     }
     return ($scored | Sort-Object Score -Descending | Select-Object -First $Limit)
@@ -798,7 +822,20 @@ function Test-VaultData {
     # confident memory about code that has since changed. Any note about code
     # or environment state must carry a verified date so it can be rechecked
     # before it is relied on.
-    if ((Test-VaultCodeShaped -Text "$($Data['description']) $Path") -and -not $Data['verified']) {
+    #
+    # EXEMPTION: inbox/ is unverified BY CONSTRUCTION -- propose cannot pass a
+    # verified date at all, so applying this rule there made every code-shaped
+    # external claim unstaggable ("driver installer exits code 7" is exactly
+    # the claim most worth staging). Refusing at the staging door pushes the
+    # agent toward the laundering this system exists to prevent: either drop
+    # the memory, or create it as `observed` to get past the guard. So the
+    # rule bites at PROMOTION, not staging: a code-shaped note in entities/,
+    # decisions/, lessons/ still requires verified. Inbox items cannot be
+    # relied on -- basis is declared, recall shows it, and the human drains
+    # them. Found by adversarial-demo-test 2026-10-18; no suite had ever
+    # proposed a code-shaped claim, which is how it survived until the demo.
+    $stagedInInbox = $Path -match '(^|[\\/])inbox[\\/]'
+    if (-not $stagedInInbox -and (Test-VaultCodeShaped -Text "$($Data['description']) $Path") -and -not $Data['verified']) {
         $problems += 'missing `verified` date (this note is about code/environment state)'
     }
 
