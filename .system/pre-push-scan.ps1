@@ -67,10 +67,19 @@ $Detectors = [ordered]@{
 # excluding them removes a false positive without masking a leak. Matched at a
 # BOUNDARY: sub.example.com is excluded, notexample.com and
 # example.com.evil.io are not.
+#
+# 'vault.local' is NOT RFC-reserved -- it is added deliberately (2026-10-18) as
+# this project's own synthetic identity domain. The documented local author
+# names (see README authorship) use it, and one such mention reached pushed
+# history in demo-with-without.mjs and the README. Email findings are never
+# baselinable, so without this the scan stays permanently red on a name that
+# identifies no person and can resolve to no mailbox. Narrow on purpose: only
+# this domain and its subdomains, not the whole .local space.
 $ReservedDomains = @(
     'example.com', 'example.net', 'example.org',
     'example.invalid', 'example.test', 'example.localhost',
-    'test', 'invalid', 'localhost', 'example'
+    'test', 'invalid', 'localhost', 'example',
+    'vault.local'
 )
 
 function Get-ContentHash {

@@ -150,6 +150,34 @@ Expected outcome for each: **all pass, zero fail.** Verified 2026-10-18.
 Treat that as a record of that day, not a standing claim — run the commands
 above.
 
+### The live demo (one command)
+
+```bash
+powershell -NoProfile -ExecutionPolicy Bypass -File demo.ps1
+```
+
+A transcript proves nothing — anyone can paste green output. This builds a
+**fresh clone of the pushed commit from GitHub** into `%TEMP%` and runs
+everything against that clone, live, printing as it goes:
+
+1. clone from GitHub (falls back to the local repo only if GitHub is
+   unreachable, and prints that substitution loudly — never silent);
+2. all six suites against the clone, output streaming;
+3. the adversarial demo (the story, 32 assertions);
+4. the with/without claim demo (same task, memory present vs absent);
+5. **sabotage**: flips both status guards back to case-insensitive — the real
+   historical defect — shows `registry-test` red at **94/97** with the three
+   wrong-case assertions named and the CONTROL rows still green, restores the
+   file from git, shows **97/97** again;
+6. verdict: clone HEAD never moved, real vault read-only throughout.
+
+Expected outcome: `EVERY PHASE BEHAVED AS EXPECTED`, exit 0 — measured 179s
+(2026-10-18). `-Quick` skips the five supporting suites; `-Keep` leaves the
+clone behind for inspection. Nothing is pushed; the real vault is never a write
+target. Exit 0 means every phase behaved *as expected*, including the sabotage
+being caught — a suite that stayed green after the guard was broken would be
+reported as a demo failure, loudly.
+
 ### Pre-commit hook
 
 A `.githooks/pre-commit` hook (enabled via `git config core.hooksPath .githooks`)
