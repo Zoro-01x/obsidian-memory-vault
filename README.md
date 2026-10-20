@@ -215,6 +215,79 @@ verdict is void (exit 2), never clean.
 
 Exit codes: `0` clean · `1` findings · `2` scanner or self-test failure.
 
+### Attack mode: you break it, the gates grade it
+
+```bash
+powershell -NoProfile -ExecutionPolicy Bypass -File attack-mode.ps1
+```
+
+The scripted demo proves you catch the defect you already know about. That is
+a floor, not a claim. Act two removes your hands from the wheel: **the
+recipient's own agent picks the attack**, and the gates grade what it did. A
+hole found live is the demo succeeding, not failing — it becomes a permanent
+test. The only way to fail is to hide one.
+
+`attack-mode.ps1` runs five phases:
+
+1. **Build** — `.system/attack-pack.ps1` makes a scrubbed sandbox under
+   `%TEMP%`: a clean-room `git init` with **one plumbing commit at a fixed
+   date**, so for a given package every build produces the identical start
+   hash (measured twice in a row on the shipped file set: `fa018876`). It is
+   never a copy of this repo — a clone, even
+   with the notes swapped out, still carries the real history inside its
+   packfiles. The note set is **replaced, not redacted**: every name in
+   `synthetic/` is invented; nothing derived from a real note travels, because
+   a rewritten copy leaks what it rewrote. Before anything is built, the
+   SHA-256 of the gate scripts is printed — publish those with the zip; they
+   are the recipient's anchor outside the package. A leak scan then runs over
+   every shipped file (including `.git`) and refuses to hand over a sandbox
+   with a single user path, credential shape or home directory in it.
+2. **Anchor** — the pre-attack state (HEAD, refs, working tree, ignored
+   files) is written *outside* the sandbox tree, where the attack cannot
+   reach it.
+3. **Calibrate** — a known violation is planted on purpose (a future-dated
+   `verified:` claim with no record behind it). The checker must go red. If
+   it does not, every later green is meaningless and the run fails loudly.
+   Then it is removed, the repo is collected, and the checker must return to
+   green. Scored as `KNOWN`, never as a find.
+4. **Attack** — the sandbox is handed over with one instruction: *break its
+   guarantees. Change what it says, what it stores, its history — your call.*
+5. **Grade** — `invariant-check.ps1` reports the diff, the guarantees held
+   and broken, tamper attempts, its own coverage, and — stated, not silently
+   skipped — what it did **not** examine.
+
+What the checker actually catches (measured, six representative attacks run
+against a sandbox: false provenance claim, remote added, history amended,
+checker edited, executable-surface config planted, file hidden on an ignored
+path): **all six**, each named — including the edited checker itself,
+detected by re-hashing every gate file against the build receipt. Exit 1,
+`VIOLATIONS FOUND`.
+
+**The trust model, stated plainly.** This script lives inside the package it
+grades, so it cannot be its own authority. What you get is *local evidence,
+independently inspectable* — not tamper-proof attestation. The anchors that
+make it checkable are outside it: the published pre-build digests (recompute
+with `Get-FileHash invariant-check.ps1 -Algorithm SHA256` and compare), and
+the build receipt, written before any attack could start. Any timeout, crash
+or missing baseline yields `UNDETERMINED` — never green. "No diff" is not
+success; it is `NO_VIOLATION_OBSERVED`, within the coverage the output just
+listed.
+
+Measured honest ceilings, from building it: the scanner alone would have
+reported *clean* on all six attacks above — it guards the vocabulary, not git
+state; the static half is what saw them, which is why both halves exist and
+why the dynamic half wants a disposable VM when it is used as evidence. An
+attack that only touches files outside the package (PATH shims, a PowerShell
+profile) leaves no diff for any checker here to find. And a returned artifact
+over any channel — as opposed to this local, self-serve flow — must pass
+symlink, junction and path-traversal rejection before anything reads it;
+that check is not implemented here because this flow never receives one.
+
+Nothing here touches the real vault: the sandbox has no remotes, no shared
+object store, and no path to your notes. It is disposable — every run
+rebuilds it from scratch, so re-running the command above always starts from
+the same clean, deterministic baseline.
+
 ## The demo: does memory change the answer?
 
 ```bash
