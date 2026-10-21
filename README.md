@@ -244,7 +244,13 @@ Every push attempt appends one JSON line to `.system/push-audit.jsonl`,
 pass or blocked. Honest ceiling: this makes silent skips *evident*, not
 impossible — erasing an entry means rewriting pushed history, which the
 whole-history scanner also sees. A fresh clone needs the `hooksPath` line
-above, same as the pre-commit hook.
+above, same as the pre-commit hook. Second honest ceiling: checking out a
+commit older than the push guard itself removes `.githooks/pre-push` from the
+working tree — git skips hooks that are not there, so pushes run unguarded
+until you check back out to a commit that carries it, and the audit trail
+cannot flag that window because no attempt ever runs inside it.
+`git ls-tree HEAD .githooks` after any history move answers in one line which
+guards exist at that commit.
 
 ### Attack mode: you break it, the gates grade it
 
