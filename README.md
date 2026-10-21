@@ -215,6 +215,37 @@ verdict is void (exit 2), never clean.
 
 Exit codes: `0` clean · `1` findings · `2` scanner or self-test failure.
 
+### Pre-push guard
+
+The scanner above was originally wired to nothing — a manual run found it red
+on already-pushed history (2026-10-21), which is the failure mode it exists
+to prevent. `.githooks/pre-push` (same `git config core.hooksPath .githooks`
+enablement as the pre-commit hook) now runs `.githooks/pre-push-guard.ps1`,
+which fails closed:
+
+1. **scanner** — the whole-history scan above, verbatim, exit 0 required;
+2. **baseline anchor** — if the *committed* baseline differs from the last
+   anchor in the append-only `.system/push-audit.jsonl`, the push blocks
+   until the owner runs `.\audit-baseline.ps1 -Reason '...'`. Accepting
+   findings without a dated, written reason is the rubber stamp; this makes
+   it leave a trail. (The agent-edit deny on the baseline file is the same
+   principle: acceptance is an owner action, recorded, never silent);
+3. **provenance** — any `basis:` value changed inside the pushed commits is
+   printed `old -> new` and recorded (reported, not blocked — owner edits
+   are ordinary work; they must be *visible*, not forbidden);
+4. **shadow notes** — `.md` files inside the vault that git ignores are
+   listed; they are invisible to `git status` and to every gate that reads
+   tracked files;
+5. **index drift** — `CORE.md` wikilinks that point at no note are named;
+6. **gate digests** — SHA-256 of the gate scripts rides in each audit entry,
+   so a later edit to the grader itself shows up as a diff in history.
+
+Every push attempt appends one JSON line to `.system/push-audit.jsonl`,
+pass or blocked. Honest ceiling: this makes silent skips *evident*, not
+impossible — erasing an entry means rewriting pushed history, which the
+whole-history scanner also sees. A fresh clone needs the `hooksPath` line
+above, same as the pre-commit hook.
+
 ### Attack mode: you break it, the gates grade it
 
 ```bash

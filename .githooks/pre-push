@@ -1,0 +1,27 @@
+#!/bin/sh
+# Pre-push: run the history scanner and the owner-edit guard. Fail closed.
+#
+# Why this exists: .system/pre-push-scan.ps1 was written to gate pushes but
+# no hook ever called it -- on 2026-10-21 a manual run found it RED on
+# history that had already been pushed the day before. Discipline was the
+# only gate. This wires it into the path git actually takes.
+#
+# stdin carries the ref list git is about to push (local ref, local sha,
+# remote ref, remote sha). It is forwarded to the guard so the provenance
+# report covers exactly the pushed range.
+#
+# Honest ceiling (stated in the README too): this makes silent skips
+# evident, not impossible. Exit nonzero = push refused; no bypass switch.
+
+tmp="$(mktemp)"
+trap 'rm -f "$tmp"' EXIT
+cat > "$tmp"
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(dirname "$0")/pre-push-guard.ps1" -RefFile "$tmp"
+rc=$?
+
+if [ $rc -ne 0 ]; then
+    echo "" >&2
+    echo "[pre-push] BLOCKED (exit $rc). Push refused -- resolve the findings above." >&2
+fi
+exit $rc
