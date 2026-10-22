@@ -365,7 +365,7 @@ The demo never touches the real vault: `vault-lib.ps1` only honours
 
 **Authorship:** built by Zoro with an OpenCode agent. Commits are authored by
 synthetic local identities (`harness@vault.local`, `migrate@vault.local`), which
-is why they link to no GitHub account. That is deliberate for a private repo —
+is why they link to no GitHub account. That is deliberate —
 the scanner confirms identities are local-only and leak nothing real.
 
 ## Limitations
@@ -414,7 +414,7 @@ Stated plainly, because hiding them would be the disqualifying part:
 9. **Not yet shown to improve work.** The suites prove the plumbing; the demo
    proves information availability. What has *not* been measured is whether an
    agent with this memory produces better work than one without.
-10. **Private repository.** No outsider has cloned and reproduced it yet.
+10. **Public repository since 2026-10-22.** No outsider has cloned and reproduced it yet.
 
 ## Non-goals
 
