@@ -21,3 +21,5 @@ Caveats: Arial is proportional, so terminal column-aligned output is slightly mi
 - [ ] Reviewed by user
 - [ ] Promoted to a permanent note
 - [ ] Archived (not worth keeping)
+
+UPDATE 2026-10-22 (later same day): Sam ordered 'go to system default font, now'. All 4 font lines (which had become 'Arial Narrow') were DELETED from %APPDATA%\Code\User\settings.json -- editor/terminal/debug console/notebook output are back to VS Code built-in defaults. Earlier letterSpacing history in this claim still stands.
