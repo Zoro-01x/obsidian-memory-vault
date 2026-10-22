@@ -61,6 +61,28 @@
                         "detector":  "windows user path",
                         "path":  "entities/Obsidian CDP access.md",
                         "sha256":  "6576cc4d2e9445f28c9d1d5827121baf5da773818cd49ff74c628a7d40faaddc"
-                    }
+                    },
+                    {
+    "detector":  "windows user path",
+    "path":  ".system/native-stderr-test.ps1",
+    "sha256":  "7b0b16305a92485e690553d2c4506c4e98420a6caa9d5478b706b85748171b1e"
+},
+{
+    "detector":  "windows user path",
+    "path":  ".system/verify-test.ps1",
+    "sha256":  "f8aed2d635a0be7dc296bf22481596eee743254d138ea5f06e80e430e48c8971"
+},
+{
+    "detector":  "windows user path",
+    "path":  ".system/registry-test.ps1",
+    "sha256":  "48229c0ec4e64553595cf27e4c81cf2e4f065c75731a81dd987f8b4d26167327"
+},
+{
+    "detector":  "windows user path",
+    "path":  ".system/registry-test.ps1",
+    "sha256":  "f9cad6ad63b8d35dac66a57926eb368519c84326eb17f04957944d2ccee3be16"
+}
+                    
+                    
                 ]
 }
