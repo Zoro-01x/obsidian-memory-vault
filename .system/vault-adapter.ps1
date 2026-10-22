@@ -64,6 +64,13 @@ function Get-ArgInt {
     if ([int]::TryParse([string]$A[$Name], [ref]$n)) { return $n }
     return $Default
 }
+function Get-ArgDouble {
+    param([hashtable]$A, [string]$Name, [double]$Default)
+    if (-not $A.ContainsKey($Name) -or $null -eq $A[$Name]) { return $Default }
+    $n = 0.0
+    if ([double]::TryParse([string]$A[$Name], [ref]$n)) { return $n }
+    return $Default
+}
 function Get-ArgBool {
     param([hashtable]$A, [string]$Name, [bool]$Default)
     if (-not $A.ContainsKey($Name) -or $null -eq $A[$Name]) { return $Default }
@@ -110,7 +117,7 @@ try {
         'recall' {
             $q = Get-ArgString $a 'query'
             if ([string]::IsNullOrWhiteSpace($q)) { throw 'recall: `query` is required.' }
-            $hits = @(Find-VaultNote -Query $q -Limit (Get-ArgInt $a 'limit' 10))
+            $hits = @(Find-VaultNote -Query $q -Limit (Get-ArgInt $a 'limit' 10) -MinTrust (Get-ArgDouble $a 'minTrust' 0))
             $rows = @(foreach ($h in $hits) {
                 [pscustomobject]@{
                     path        = $h.Path
@@ -122,6 +129,7 @@ try {
                     status      = $h.Status
                     verified    = $h.Verified
                     score       = [math]::Round($h.Score, 2)
+                    trust       = $h.Trust
                 }
             })
             $result = @{ query = $q; count = $rows.Count; hits = $rows }
@@ -271,10 +279,25 @@ try {
 
         'stale' {
             # The prune/verify pass. Read-only -- nothing here deletes.
+            # Rekey to lowercase like recall: the MCP formatter reads
+            # i.reasons/i.path/i.status, and PowerShell's PascalCase keys
+            # serialise as-is -- `reasons.join` on undefined was the long-
+            # standing vault.stale() adapter crash.
             $rows = @(Get-VaultStale `
                         -InboxDays    (Get-ArgInt $a 'inboxDays' 7) `
                         -VerifiedDays (Get-ArgInt $a 'verifiedDays' 90))
-            $result = @{ count = $rows.Count; items = $rows }
+            $items = @(foreach ($r in $rows) {
+                [pscustomobject]@{
+                    path     = $r.Path
+                    folder   = $r.Folder
+                    reasons  = @($r.Reasons)
+                    updated  = $r.Updated
+                    verified = $r.Verified
+                    status   = $r.Status
+                    ageDays  = $r.AgeDays
+                }
+            })
+            $result = @{ count = $items.Count; items = $items }
         }
 
         'verify' {

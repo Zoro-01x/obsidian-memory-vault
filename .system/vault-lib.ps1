@@ -582,7 +582,8 @@ function Find-VaultNote {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Query,
-        [int]$Limit = 10
+        [int]$Limit = 10,
+        [double]$MinTrust = 0
     )
     $rg = 'C:\Users\Home\tools\rg\ripgrep-14.1.1-x86_64-pc-windows-msvc\rg.exe'
     $hits = @()
@@ -647,12 +648,27 @@ function Find-VaultNote {
         }
         if ($matched -gt 1) { $score += $matched * 2 }
         # Recency: an `updated` note beats a forgotten one on the same relevance.
+        # $ageDays is RESET per note -- it lives in function scope, so a note
+        # without `updated` would otherwise inherit the previous note's age.
+        $ageDays = $null
         if ($fm.updated) {
             try {
                 $ageDays = ((Get-Date) - [datetime]$fm.updated).TotalDays
                 if ($ageDays -lt 30) { $score += 1.5 } elseif ($ageDays -lt 120) { $score += 0.5 }
             } catch { }
         }
+        # Trust decay (acceptance Test 6, Meta spec): age decays trust, and
+        # trust scales the score -- fresh 0.9, past 100 days 0.6, past a year
+        # 0.4, undated 0.7 neutral. Recall still RETURNS decayed notes (Test 7:
+        # resurrection): it demotes, never hides. minTrust lets a caller
+        # demand fresher; the default 0 keeps every note reachable.
+        $trust = 0.7
+        if ($null -ne $ageDays) {
+            if     ($ageDays -le 100) { $trust = 0.9 }
+            elseif ($ageDays -le 365) { $trust = 0.6 }
+            else                       { $trust = 0.4 }
+        }
+        $score = [Math]::Round($score * $trust, 2)
         # Stale/superseded notes should surface below active ones, not vanish.
         if ($fm.status -eq 'stale' -or $fm.status -eq 'superseded') { $score -= 2 }
         # On equal relevance, provenance decides: someone else's account is
@@ -674,6 +690,7 @@ function Find-VaultNote {
             SupersededBy = $fm.superseded_by
             Description  = $fm.description
             Score        = $score
+            Trust        = $trust
         }
     }
     $scored = @($scored)
@@ -691,6 +708,9 @@ function Find-VaultNote {
                 $s.Score = [Math]::Round($succ.Score - 0.5, 2)
             }
         }
+    }
+    if ($MinTrust -gt 0) {
+        $scored = @($scored | Where-Object { $_.Trust -ge $MinTrust })
     }
     return ($scored | Sort-Object Score -Descending | Select-Object -First $Limit)
 }
@@ -1330,6 +1350,12 @@ function Get-VaultStale {
 
         if ($folder -eq 'inbox' -and $null -ne $ageDays -and $ageDays -ge $InboxDays) {
             $reasons += "inbox item $ageDays days old -- drain it (promote or delete)"
+        }
+        # Trust decay (acceptance Test 6): past 100 days a note's trust drops
+        # from 0.9 to 0.6 -- the session-end pass must flag it for the CORE
+        # index so an old claim cannot masquerade as current.
+        if ($folder -ne 'inbox' -and $null -ne $ageDays -and $ageDays -gt 100) {
+            $reasons += "trust decayed ($ageDays days > 100) -- demote from the CORE index unless re-verified"
         }
         if ($fm.status -eq 'stale')     { $reasons += 'marked stale' }
         if ($fm.status -eq 'superseded') {
