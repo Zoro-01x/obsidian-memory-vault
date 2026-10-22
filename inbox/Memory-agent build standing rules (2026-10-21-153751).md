@@ -4,8 +4,9 @@ basis: user-stated
 description: 'Standing decisions for memory-agent build (Sam, 2026-10-21): TypeScript only, never Python. Meta AI and ChatGPT stay untouched — scripts may only READ'
 name: Memory-agent build standing rules (2026-10-21-153751)
 scope: ObsidianVault
-status: active
-updated: '2026-10-21'
+status: superseded
+superseded_by: Memory-agent build standing rules
+updated: '2026-10-22'
 ---
 
 ## Claim
