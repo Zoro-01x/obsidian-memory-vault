@@ -10,9 +10,11 @@
 // Exit code 0 = all assertions passed.
 
 import { spawn } from "node:child_process";
+import { statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const SERVER = fileURLToPath(new URL("./vault-mcp.mjs", import.meta.url));
+const CORE_FILE = fileURLToPath(new URL("../CORE.md", import.meta.url));
 const TIMEOUT_MS = 60_000;
 
 const results = [];
@@ -123,6 +125,19 @@ check(
   `${coreTxt.length} chars vs cap ${coreCap}${coreTruncated ? " + 30-char marker (cap engaged)" : ""}`,
 );
 check("core marker present when over budget", coreTruncated, coreTruncated ? "truncated" : "not truncated");
+
+// 2a index cap (hardening batch, three-model review 2026-10-22): the
+// always-loaded index must stay inside its declared ~1500-token FILE budget.
+// The core tool truncates on read, but silent truncation means the tail of the
+// protocol vanishes from every future session -- so the file itself gets a
+// loud failure here instead. Same ~4 chars/token conversion as the cap above.
+const coreBytes = statSync(CORE_FILE).size;
+const coreBudget = 1500 * 4;
+check(
+  "CORE.md sits inside its 1500-token file budget (loud, before silent truncation)",
+  coreBytes <= coreBudget,
+  `${coreBytes} bytes vs budget ${coreBudget} (${Math.round((coreBytes / coreBudget) * 100)}% used)`,
+);
 
 const recallTxt = replies.get(5)?.result?.content?.[0]?.text ?? "";
 check("recall finds the Intel driver lesson", recallTxt.includes("Intel"), recallTxt.split("\n")[0]);
