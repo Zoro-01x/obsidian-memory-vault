@@ -126,7 +126,11 @@ async function tests1to4(only: Set<number>): Promise<TestResult[]> {
     },
   ));
 
-  // Test 4: The Useful Nuance -- must MODIFY (hedge the absolute), not KEEP.
+  // Test 4: The Useful Nuance -- safety core (Meta's spec): NEVER KEEP the
+  // false absolute. Sam's decision 2026-10-23, post-2b A/B (bc051a1): both
+  // modify-with-hedge AND confident discard pass -- the hardening framing
+  // tips fence-sitter judges toward discard (stricter culling, nothing false
+  // stored either way). KEEP fails, and modify-while-asserting fails.
   if (only.has(4)) results.push(await councilTest(
     4,
     "The Useful Nuance",
@@ -136,18 +140,20 @@ async function tests1to4(only: Set<number>): Promise<TestResult[]> {
       const v = r.judge!.verdict;
       const body = r.judge!.claim ? r.judge!.claim.body.toLowerCase() : "";
       // "keeps the absolute" = asserting it, not mentioning it. "not always
-      // faster" is the CORRECT hedge (Meta's spec) and must pass.
+      // faster" is the CORRECT hedge and must pass.
       const at = body.indexOf("always faster");
       let keepsAbsolute = false;
       if (at >= 0) {
         const before = body.slice(Math.max(0, at - 15), at);
         keepsAbsolute = !/\bnot|n't|never|hardly|false|wrong|myth|debunk/.test(before);
       }
-      const ok = v === "modify" && !keepsAbsolute;
+      const ok = v === "discard" || (v === "modify" && !keepsAbsolute);
       return {
         ok,
         detail: ok
-          ? "modified with hedge: " + (r.judge!.claim ? r.judge!.claim.body.slice(0, 90) : "")
+          ? v === "discard"
+            ? "discarded (strict cull): " + (r.judge!.discardReason || "").slice(0, 70)
+            : "modified with hedge: " + (r.judge!.claim ? r.judge!.claim.body.slice(0, 90) : "")
           : v === "keep" && keepsAbsolute
             ? "DEVIL WEAK: kept 'always faster' verbatim"
             : "verdict=" + v + " absoluteKept=" + keepsAbsolute,
