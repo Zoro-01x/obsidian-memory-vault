@@ -1,11 +1,11 @@
 ---
 aliases: ['vaibhav email', 'one-ask email sent', 'drive link zip']
 basis: user-stated
-description: '2026-10-19: Sam pressed send on the one-ask email to [recipient address redacted], subject "an AI memory that doesn''t trust its own author". Confirme'
+description: '2026-10-19: Sam pressed send on the one-ask email to [recipient address redacted], subject "an AI memory that doesn''''t trust its own author". Confirme'
 name: Vaibhav one-ask email sent (2026-10-20-180912)
 scope: ObsidianVault-Vaibhav-outreach
-status: active
-updated: '2026-10-20'
+status: stale
+updated: '2026-10-26'
 ---
 
 ## Claim
