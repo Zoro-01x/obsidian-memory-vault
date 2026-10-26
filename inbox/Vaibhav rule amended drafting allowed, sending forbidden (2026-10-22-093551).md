@@ -4,8 +4,8 @@ basis: user-stated
 description: 'Sam amended the standing rule on 2026-10-22: the agent may DRAFT a message or email to Vaibhav when Sam explicitly asks, but must never SEND, post, pu'
 name: Vaibhav rule amended drafting allowed, sending forbidden (2026-10-22-093551)
 scope: vault
-status: active
-updated: '2026-10-22'
+status: stale
+updated: '2026-10-26'
 ---
 
 ## Claim
