@@ -40,3 +40,15 @@ In that same verified session the assistant opened with "No — I cannot see an 
 - Supported image formats: PNG, JPEG, GIF, WebP (content-detected). SVG is text; BMP/AVIF/audio/video never reach the model. `media.image` config controls auto-resize (default 2000x2000, 5 MiB base64).
 - Mid-session config reload can destabilize the image path; verify in a NEW session before concluding it is fixed.
 - Never flip-flop: state once which layer is failing (model capability vs session forwarding) and verify with one content question.
+
+## Model attribution (2026-10-27, refined after the fresh-session test)
+
+The "deny while seeing" and contradiction behaviors are NOT equal across models. Observed attribution:
+
+| Model | Behavior observed |
+|---|---|
+| Nemotron 3.5 Lightning 30B (text-only) | Yesterday's flip-flops: "model doesn't support images" vs listing VL as image-capable; contradictions repeated across a full day |
+| Nemotron 3.5 Super VL 120B | Denied while seeing: fresh session ses_e8454133affefE2xKDJW4LpTLt opened with "No — I cannot see" then accurately described screenshot-only content; also produced denial responses mid-session while status bar showed it active |
+| MiMo (opencode/mimo-v2.6-flash-free) | Sees images correctly with no denial preamble; same session, same images |
+
+Conclusion as observed: the config fix was necessary but not sufficient — Nemotron models (both sizes) carry a text-level habit of denying image input even when the pixels arrive. MiMo does not exhibit this. If image work is the task, pick MiMo; the capability declaration in opencode.jsonc stays either way as the pipeline gate.
