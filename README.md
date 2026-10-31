@@ -364,9 +364,10 @@ The demo never touches the real vault: `vault-lib.ps1` only honours
 | No Obsidian CDP graph path | Port 9223 is arbitrary code execution inside Obsidian; grep was fast enough | Graph traversal over CDP |
 
 **Authorship:** built by Zoro with an OpenCode agent. Commits are authored by
-synthetic local identities (`harness@vault.local`, `migrate@vault.local`), which
-is why they link to no GitHub account. That is deliberate —
-the scanner confirms identities are local-only and leak nothing real.
+synthetic local identities (for example `harness@vault.local`,
+`migrate@vault.local`, `council@local`), which is why they link to no GitHub
+account. That is deliberate — the scanner confirms identities are local-only
+and leak nothing real.
 
 ## Limitations
 
