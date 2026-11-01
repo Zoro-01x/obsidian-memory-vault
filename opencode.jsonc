@@ -1,0 +1,41 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  "model": "nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b",
+
+  "providers": {
+    "nvidia": {
+      "settings": {
+        "timeout": 300000,
+        "headerTimeout": 90000,
+        "chunkTimeout": 180000
+      },
+      "models": {
+        // Text-only model per 10.10.2 — OpenCode is not vision capable.
+        // Evidence is snapshot + innerText + tabs, never take_screenshot.
+        "nvidia/nemotron-3.5-super-vl-120b-a12b": {
+          "capabilities": {
+            "tools": true,
+            "input": ["text"],
+            "output": ["text"]
+          }
+        }
+      }
+    }
+  },
+
+  "mcp": {
+    "servers": {
+      "vault": {
+        "type": "local",
+        "command": ["python", "mcp_vault.py"],
+        "cwd": "D:/Aariv/Learning Python"
+      },
+      "brave": {
+        "type": "local",
+        "command": ["npx", "-y", "@playwright/mcp@latest", "--browser", "chrome", "--cdp-endpoint", "http://localhost:9222"],
+        "description": "SHARED REAL Brave — joins your existing Brave via CDP on port 9222. TEXT-ONLY. No --isolated, no --caps vision, no custom user-data-dir."
+      }
+    }
+  }
+}

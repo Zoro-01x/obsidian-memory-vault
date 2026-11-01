@@ -17,3 +17,6 @@ test_image.png
 # Local dev
 .env
 .venv/
+
+# Playwright MCP logs
+.playwright-mcp/
