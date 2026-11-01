@@ -1,0 +1,19 @@
+# Generated
+__pycache__/
+*.pyc
+*.db
+*.backup_*
+
+# Debug/build artifacts
+APPLY_FIXES.py
+APPLY_FIXES_V2.py
+APPLY_FIXES_V3.py
+debug_*.py
+fix_*.py
+
+# Test artifacts
+test_image.png
+
+# Local dev
+.env
+.venv/
